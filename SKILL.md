@@ -13,7 +13,7 @@ machine. Prefer the Codex SDK backend; use `codex exec` or PTY mode only as a fa
 ## Install
 
 ```bash
-git clone https://github.com/Sergey2Gnezdilov/CodexClaw.git codex-smith
+git clone https://github.com/Sergey2Gnezdilov/codex-smith.git
 cd codex-smith
 npm install
 cp .env.example .env

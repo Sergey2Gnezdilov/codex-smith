@@ -24,7 +24,6 @@ TypeScript, Node.js 20+, `@openai/codex-sdk`, Telegraf, node-pty, node-cron, MCP
 
 ## Repository
 
-- Current URL: https://github.com/Sergey2Gnezdilov/CodexClaw
-- Planned repository slug: `codex-smith`
+- Current URL: https://github.com/Sergey2Gnezdilov/codex-smith
 - Origin: https://github.com/MackDing/CodexClaw
 - License: MIT

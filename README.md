@@ -56,11 +56,8 @@ codex login
 
 ## Quick Start
 
-Until the GitHub repository itself is renamed, clone the existing URL into the new
-directory name:
-
 ```bash
-git clone https://github.com/Sergey2Gnezdilov/CodexClaw.git codex-smith
+git clone https://github.com/Sergey2Gnezdilov/codex-smith.git
 cd codex-smith
 npm install
 cp .env.example .env
