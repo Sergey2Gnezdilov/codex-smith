@@ -8,6 +8,7 @@ import {
   type CommandPrefixList
 } from "./commandLine.js";
 import { t, type Locale } from "../bot/i18n.js";
+import { resolveConversationKey } from "../bot/accessContext.js";
 
 export interface ShellInspection {
   argv: string[];
@@ -64,7 +65,7 @@ export class ShellManager {
   }
 
   isBusy(chatId: string | number): boolean {
-    return this.runningJobs.has(String(chatId));
+    return this.runningJobs.has(resolveConversationKey(chatId));
   }
 
   getAllowedCommands(): string[] {
@@ -154,7 +155,7 @@ export class ShellManager {
     workdir: string;
     locale?: Locale;
   }): Promise<ShellExecutionResult> {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     if (this.isBusy(key)) {
       return {
         started: false,

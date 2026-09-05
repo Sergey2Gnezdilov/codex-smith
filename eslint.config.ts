@@ -8,6 +8,7 @@ const config = [
     ignores: [
       "node_modules/**",
       ".git/**",
+      ".codex-smith-state.json",
       ".codex-telegram-claws-state.json",
       "coverage/**"
     ]

@@ -1,0 +1,30 @@
+# Codex Smith
+
+> A self-hosted Telegram control plane for local OpenAI Codex agents.
+
+## Summary
+
+Codex Smith connects Telegram to a local Codex installation. The official Codex SDK
+is the primary backend, with `codex exec` and CLI/PTy fallbacks. It persists threads
+per chat and repository, streams agent events, switches projects below an allowlisted
+workspace root, and provides explicit GitHub and MCP operations.
+
+## Security Model
+
+- Telegram user allowlist is mandatory
+- Default Codex sandbox is `workspace-write`
+- Default approval policy is `on-request`
+- Codex network access and the bot shell are disabled by default
+- One active bot-managed writer is allowed per working directory
+- Credentials and runtime state are excluded from version control
+
+## Stack
+
+TypeScript, Node.js 20+, `@openai/codex-sdk`, Telegraf, node-pty, node-cron, MCP SDK.
+
+## Repository
+
+- Current URL: https://github.com/Sergey2Gnezdilov/CodexClaw
+- Planned repository slug: `codex-smith`
+- Origin: https://github.com/MackDing/CodexClaw
+- License: MIT

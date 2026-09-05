@@ -10,6 +10,14 @@ interface ReplyRecord {
 }
 
 interface TestContext {
+  state: {
+    codexSmith: {
+      userId: string;
+      chatId: string;
+      conversationKey: string;
+      isAdmin: boolean;
+    };
+  };
   chat: {
     id: number;
   };
@@ -48,6 +56,14 @@ class FakeBot {
 function createContext(text: string, chatId = 1): TestContext {
   const replies: ReplyRecord[] = [];
   return {
+    state: {
+      codexSmith: {
+        userId: String(chatId),
+        chatId: String(chatId),
+        conversationKey: `dm:${chatId}`,
+        isAdmin: true
+      }
+    },
     chat: {
       id: chatId
     },
@@ -74,6 +90,8 @@ function createDependencies(
     continuePendingPrompt?: () => Promise<unknown>;
     routeMessage?: (text: string) => Promise<unknown>;
     githubExecute?: () => Promise<unknown>;
+    shellInspect?: () => Record<string, unknown>;
+    shellExecute?: () => Promise<Record<string, unknown>>;
     getStatus?: () => Record<string, unknown>;
     switchWorkdir?: (chatId: string | number, target: string) => unknown;
     devStart?: () => Promise<unknown>;
@@ -81,6 +99,7 @@ function createDependencies(
     devStop?: () => boolean;
     devLogs?: () => string;
     devUrl?: () => string | null;
+    memoryStore?: Record<string, unknown>;
   } = {}
 ) {
   const bot = new FakeBot();
@@ -144,10 +163,14 @@ function createDependencies(
       isEnabled: () => false,
       isReadOnly: () => true,
       getAllowedCommands: () => [],
-      inspectCommand: () => {
-        throw new Error("not used");
-      },
-      execute: async () => ({ started: false, reason: "busy" })
+      inspectCommand:
+        overrides.shellInspect ||
+        (() => {
+          throw new Error("not used");
+        }),
+      execute:
+        overrides.shellExecute ||
+        (async () => ({ started: false, reason: "busy" }))
     } as any,
     devServerManager: {
       start:
@@ -205,11 +228,48 @@ function createDependencies(
     } as any,
     scheduler: {
       triggerDailySummaryNow: async () => {}
-    } as any
+    } as any,
+    memoryStore: overrides.memoryStore as any
   });
 
   return { bot };
 }
+
+test("memory command stages a conversation-scoped record", async () => {
+  const proposals: Array<Record<string, unknown>> = [];
+  const { bot } = createDependencies({
+    memoryStore: {
+      isEnabled: () => true,
+      list: () => [],
+      propose: async (scope: Record<string, unknown>, content: string) => {
+        proposals.push({ scope, content });
+        return {
+          duplicate: false,
+          entry: {
+            id: "memory-12345678",
+            scope,
+            content,
+            status: "pending"
+          }
+        };
+      }
+    }
+  });
+  const ctx = createContext("/memory remember prefers concise replies");
+  const handler = bot.commands.get("memory");
+
+  if (!handler) throw new Error("Expected /memory handler to be registered");
+  await handler(ctx);
+
+  assert.deepEqual(proposals, [
+    {
+      scope: { ownerUserId: "1", conversationKey: "dm:1" },
+      content: "prefers concise replies"
+    }
+  ]);
+  assert.match(ctx.replies[0].text, /staged/i);
+  assert.equal(ctx.replies[0].text.includes("memory\\-1"), true);
+});
 
 test("dev start reports the selected frontend script", async () => {
   const { bot } = createDependencies({
@@ -232,6 +292,63 @@ test("dev start reports the selected frontend script", async () => {
   assert.equal(ctx.replies.length > 0, true);
   assert.match(ctx.replies[0].text, /npm run start/i);
   assert.match(ctx.replies[0].text, /dev server|frontend/i);
+});
+
+test("sh git clone success suggests switching to the cloned repo", async () => {
+  const { bot } = createDependencies({
+    getStatus: () => ({
+      backend: "sdk",
+      active: false,
+      activeMode: null,
+      lastMode: null,
+      lastExitCode: null,
+      lastExitSignal: null,
+      projectSessionId: null,
+      preferredModel: null,
+      language: "en",
+      verboseOutput: false,
+      ptySupported: null,
+      workdir: "/workspace",
+      relativeWorkdir: ".",
+      workspaceRoot: "/workspace",
+      command: "codex",
+      mcpServers: [],
+      workflowSystem: "superpowers",
+      workflowPhase: "none"
+    }),
+    shellInspect: () => ({
+      argv: ["git", "clone", "https://github.com/MackDing/opc-ren.git"],
+      commandText: "git clone https://github.com/MackDing/opc-ren.git",
+      confirmed: false,
+      dangerous: false,
+      requiresConfirmation: false,
+      confirmationCommand: ""
+    }),
+    shellExecute: async () => ({
+      started: true,
+      status: "passed",
+      command: "git clone https://github.com/MackDing/opc-ren.git",
+      workdir: "/workspace",
+      exitCode: 0,
+      signal: null,
+      output: "Cloning into 'opc-ren'..."
+    })
+  });
+  const ctx = createContext(
+    "/sh git clone https://github.com/MackDing/opc-ren.git"
+  );
+  const handler = bot.commands.get("sh");
+
+  if (!handler) {
+    throw new Error("Expected /sh handler to be registered");
+  }
+
+  await handler(ctx);
+
+  assert.equal(ctx.replies.length, 3);
+  assert.match(ctx.replies[2].text, /Clone completed/i);
+  assert.match(ctx.replies[2].text, /opc\\-ren/i);
+  assert.match(ctx.replies[2].text, /repo opc\\-ren/i);
 });
 
 test("dev status, url, and logs expose repo-scoped frontend runtime details", async () => {

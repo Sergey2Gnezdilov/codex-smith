@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PtyManager } from "../src/runner/ptyManager.js";
+import { runWithAccessState } from "../src/bot/accessContext.js";
 
 type PtyManagerConstructorOptions = ConstructorParameters<typeof PtyManager>[0];
 type TelegramStub = PtyManagerConstructorOptions["bot"]["telegram"];
@@ -17,6 +18,7 @@ interface ManagerOverrides {
   telegram?: TelegramStub;
   backend?: PtyManagerConstructorOptions["config"]["runner"]["backend"];
   codexClientFactory?: CodexClientFactory;
+  initialContextProvider?: PtyManagerConstructorOptions["initialContextProvider"];
 }
 
 interface FakeSequence {
@@ -87,13 +89,15 @@ function createManager(overrides: ManagerOverrides = {}) {
         ]
       }
     },
-    codexClientFactory: overrides.codexClientFactory
+    codexClientFactory: overrides.codexClientFactory,
+    initialContextProvider: overrides.initialContextProvider
   });
 }
 
 function createFakeCodexClient(
   sequences: FakeSequence[],
-  calls: FakeCall[] = []
+  calls: FakeCall[] = [],
+  inputs: string[] = []
 ): CodexClientFactory {
   return (() => ({
     startThread(options: Record<string, unknown> = {}) {
@@ -109,7 +113,8 @@ function createFakeCodexClient(
 
       return {
         id: next.initialId || null,
-        async runStreamed() {
+        async runStreamed(input: string) {
+          inputs.push(input);
           return {
             events: next.events()
           };
@@ -130,7 +135,8 @@ function createFakeCodexClient(
 
       return {
         id: next.initialId || id,
-        async runStreamed() {
+        async runStreamed(input: string) {
+          inputs.push(input);
           return {
             events: next.events()
           };
@@ -175,6 +181,123 @@ test("pty manager stores model preference per chat", () => {
   assert.equal(manager.getStatus(123).preferredModel, null);
 });
 
+test("pty manager migrates legacy private-chat state to the new conversation key", () => {
+  const manager = createManager();
+  manager.restoreState({
+    chats: {
+      "42": {
+        preferredModel: "gpt-5-codex",
+        language: "en",
+        verboseOutput: false,
+        currentWorkdir: ".",
+        recentWorkdirs: ["."],
+        projects: {}
+      }
+    }
+  });
+
+  assert.equal(manager.getStatus("dm:42").preferredModel, "gpt-5-codex");
+  assert.equal("42" in manager.exportState().chats, false);
+  assert.equal("dm:42" in manager.exportState().chats, true);
+});
+
+test("group users keep separate Codex threads while replies use the real Telegram chat", async () => {
+  const sentMessages: SentMessageRecord[] = [];
+  const sequences: FakeSequence[] = [1, 2].map((number) => ({
+    initialId: `${number}`.repeat(8) + "-1111-1111-1111-111111111111",
+    events: async function* () {
+      yield {
+        type: "item.completed",
+        item: {
+          id: `answer-${number}`,
+          type: "agent_message",
+          text: `answer ${number}`
+        }
+      };
+      yield {
+        type: "turn.completed",
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 }
+      };
+    }
+  }));
+  const manager = createManager({
+    backend: "sdk",
+    telegram: {
+      sendMessage: async (chatId: string | number, text: string) => {
+        sentMessages.push({ chatId, text });
+        return { message_id: sentMessages.length };
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
+    },
+    codexClientFactory: createFakeCodexClient(sequences)
+  });
+
+  for (const userId of [1, 2]) {
+    const conversationKey = `group:-100:user:${userId}`;
+    await runWithAccessState(
+      {
+        userId: String(userId),
+        chatId: "-100",
+        conversationKey,
+        isAdmin: false
+      },
+      async () => {
+        await manager.sendPrompt({ chat: { id: -100 } }, `request ${userId}`);
+        await waitFor(() => !manager.getStatus(-100).active);
+      }
+    );
+  }
+
+  await waitFor(() => sentMessages.length >= 2);
+  const state = manager.exportState().chats;
+  assert.equal("group:-100:user:1" in state, true);
+  assert.equal("group:-100:user:2" in state, true);
+  assert.equal(
+    sentMessages.every((message) => message.chatId === "-100"),
+    true
+  );
+});
+
+test("pty manager injects bounded memory context only when a new SDK thread starts", async () => {
+  const inputs: string[] = [];
+  const sequences: FakeSequence[] = [
+    {
+      initialId: "11111111-1111-1111-1111-111111111111",
+      events: async function* () {
+        yield {
+          type: "turn.completed",
+          usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 }
+        };
+      }
+    },
+    {
+      initialId: "11111111-1111-1111-1111-111111111111",
+      events: async function* () {
+        yield {
+          type: "turn.completed",
+          usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 }
+        };
+      }
+    }
+  ];
+  const manager = createManager({
+    backend: "sdk",
+    initialContextProvider: () =>
+      "<codex_smith_memory>\n- prefers concise replies\n</codex_smith_memory>",
+    codexClientFactory: createFakeCodexClient(sequences, [], inputs)
+  });
+
+  await manager.sendPrompt({ chat: { id: 7 } }, "first request");
+  await waitFor(() => !manager.getStatus(7).active);
+  await manager.sendPrompt({ chat: { id: 7 } }, "second request");
+  await waitFor(() => !manager.getStatus(7).active);
+
+  assert.match(inputs[0], /codex_smith_memory/);
+  assert.match(inputs[0], /first request/);
+  assert.equal(inputs[1], "second request");
+});
+
 test("pty manager stores verbose preference per chat", () => {
   const manager = createManager();
 
@@ -203,6 +326,38 @@ test("pty manager status exposes runner workdir and MCP server names", () => {
   assert.deepEqual(status.mcpServers, ["context7", "sequential-thinking"]);
   assert.equal(status.active, false);
   assert.equal(status.workflowPhase, "none");
+});
+
+test("pty manager builds current Codex CLI arguments for fully automatic exec", () => {
+  const manager = createManager();
+
+  assert.deepEqual(
+    manager.getExecArgs(456, "update dependencies", { fullAuto: true }),
+    [
+      "--ask-for-approval",
+      "never",
+      "--sandbox",
+      "workspace-write",
+      "exec",
+      "update dependencies"
+    ]
+  );
+  assert.deepEqual(
+    manager.getExecArgs(456, "continue", {
+      fullAuto: true,
+      resumeSessionId: "11111111-1111-1111-1111-111111111111"
+    }),
+    [
+      "--ask-for-approval",
+      "never",
+      "--sandbox",
+      "workspace-write",
+      "exec",
+      "resume",
+      "11111111-1111-1111-1111-111111111111",
+      "continue"
+    ]
+  );
 });
 
 test("pty manager tracks the last detected superpowers workflow phase per project", async () => {

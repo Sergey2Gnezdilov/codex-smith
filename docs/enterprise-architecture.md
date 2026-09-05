@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the target architecture when `CodexClaw` is deployed as a financial enterprise engineering assistant for multiple subsidiary CTO teams. The current repository is a strong single-host beta. The enterprise target is a controlled multi-host platform.
+This document defines the target architecture when `Codex Smith` is deployed as a financial enterprise engineering assistant for multiple subsidiary CTO teams. The current repository is a strong single-host beta. The enterprise target is a controlled multi-host platform.
 
 ## Target Operating Model
 
@@ -82,7 +82,7 @@ Subagents should be triggered only after:
 
 ## Recommended Deployment Phases
 
-Implementation roadmap: [phase-1-roadmap.md](/Users/ding/Documents/Code/Github/CodexClaw/docs/phase-1-roadmap.md)
+Implementation roadmap: [phase-1-roadmap.md](phase-1-roadmap.md)
 
 ### Phase 1: Harden Current Single-Host Beta
 

@@ -1,7 +1,7 @@
 {
-  "name": "CodexClaw",
-  "version": "0.2.3",
-  "description": "A super Telegram bot that securely orchestrates Codex via SDK or CLI/PTy streaming, MCP routing, and GitHub automation skills.",
+  "name": "codex-smith",
+  "version": "0.3.0",
+  "description": "A secure Telegram control plane for local Codex agents, powered by the official Codex SDK with a CLI fallback.",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -27,7 +27,7 @@
     "telegraf",
     "codex",
     "openai",
-    "claude-code",
+    "codex-cli",
     "remote-coding",
     "ai-agent",
     "github-integration",
@@ -40,30 +40,32 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.19.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.13.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@octokit/rest": "^22.0.0",
-    "@openai/codex-sdk": "^0.114.0",
+    "@openai/codex-sdk": "^0.153.4",
     "dotenv": "^16.4.7",
+    "https-proxy-agent": "^8.0.0",
     "lodash.throttle": "^4.1.1",
-    "node-cron": "^4.0.5",
+    "node-cron": "^4.6.0",
     "node-pty": "^1.0.0",
-    "simple-git": "^3.28.0",
+    "simple-git": "^3.36.0",
     "strip-ansi": "^7.1.0",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "undici": "^7.29.1"
   },
   "devDependencies": {
-    "@eslint/js": "^9.17.0",
+    "@eslint/js": "^10.0.1",
     "@types/lodash.throttle": "^4.1.9",
-    "@types/node": "^25.5.0",
-    "@typescript-eslint/eslint-plugin": "^8.57.0",
-    "@typescript-eslint/parser": "^8.57.0",
-    "eslint": "^9.17.0",
-    "globals": "^17.4.0",
-    "prettier": "^3.8.1",
-    "tsx": "^4.21.0",
+    "@types/node": "^20.19.43",
+    "@typescript-eslint/eslint-plugin": "^8.69.0",
+    "@typescript-eslint/parser": "^8.69.0",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   }
 }

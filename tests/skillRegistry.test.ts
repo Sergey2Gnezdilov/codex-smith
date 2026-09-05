@@ -57,6 +57,19 @@ test("skill registry exports and restores chat state", () => {
   assert.equal(restored.isEnabled(1, "mcp"), true);
 });
 
+test("skill registry migrates legacy private-chat state", () => {
+  const registry = new SkillRegistry({ github: {}, mcp: {} });
+  registry.restoreState({
+    chats: {
+      "42": { enabledSkills: ["mcp"] }
+    }
+  });
+
+  assert.equal(registry.isEnabled("dm:42", "github"), false);
+  assert.equal("42" in registry.exportState().chats, false);
+  assert.equal("dm:42" in registry.exportState().chats, true);
+});
+
 test("skill registry reports idempotent enable and disable operations", () => {
   const registry = new SkillRegistry({
     github: {},

@@ -2,3 +2,4 @@ node_modules/
 .git/
 .env
 .codex-telegram-claws-state.json
+.codex-smith-state.json
