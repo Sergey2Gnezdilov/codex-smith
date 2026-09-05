@@ -22,6 +22,8 @@ import type {
 } from "../runner/shellManager.js";
 import type { DevServerManager } from "../runner/devServerManager.js";
 import type { SkillRegistry } from "../orchestrator/skillRegistry.js";
+import type { MemoryScope, MemoryStore } from "../memory/memoryStore.js";
+import type { CodexSmithAccessState } from "./accessContext.js";
 
 interface SkillResultPayload {
   text?: string;
@@ -38,9 +40,23 @@ interface RegisterHandlersOptions {
   skills: Record<string, any>;
   skillRegistry: SkillRegistry;
   scheduler: Scheduler;
+  memoryStore?: MemoryStore;
   adminActions?: {
     restart?: () => Promise<void>;
   };
+}
+
+function accessStateOf(ctx: any): CodexSmithAccessState {
+  const access = ctx.state?.codexSmith as CodexSmithAccessState | undefined;
+  if (!access) throw new Error("Telegram access context is unavailable.");
+  return access;
+}
+
+function formatMemoryScope(scope: MemoryScope): string {
+  if (scope.skill) return `skill:${scope.skill}`;
+  if (scope.projectPath) return `project:${scope.projectPath}`;
+  if (scope.conversationKey) return `conversation:${scope.conversationKey}`;
+  return "user";
 }
 
 async function sendChunkedMarkdown(
@@ -217,6 +233,7 @@ export function registerHandlers({
   skills,
   skillRegistry,
   scheduler,
+  memoryStore,
   adminActions
 }: RegisterHandlersOptions): void {
   const localeOf = (chatId: string | number): Locale =>
@@ -479,6 +496,100 @@ export function registerHandlers({
       await sendChunkedMarkdown(
         ctx,
         t(locale, "skillManagementFailed", { error: toErrorMessage(error) })
+      );
+    }
+  });
+
+  bot.command("memory", async (ctx: any) => {
+    if (!memoryStore?.isEnabled()) {
+      await sendChunkedMarkdown(ctx, "Memory is disabled.");
+      return;
+    }
+
+    try {
+      const access = accessStateOf(ctx);
+      const payload = extractCommandPayload(ctx.message.text, "memory");
+      const [action = "list", ...tail] = payload.split(/\s+/);
+
+      if (/^(list|status)$/i.test(action)) {
+        const entries = memoryStore.list(access.userId);
+        const lines = entries
+          .slice(-30)
+          .map(
+            (entry) =>
+              `- ${entry.id.slice(0, 8)} [${entry.status}] [${formatMemoryScope(entry.scope)}] ${entry.content}`
+          );
+        await sendChunkedMarkdown(
+          ctx,
+          [
+            "Memory:",
+            ...(lines.length ? lines : ["- (empty)"]),
+            "",
+            "Usage: /memory remember [--global|--project|--skill name] <text> | /memory approve|reject|forget <id>"
+          ].join("\n")
+        );
+        return;
+      }
+
+      if (/^(approve|reject|forget)$/i.test(action)) {
+        const id = tail[0] || "";
+        if (!id) throw new Error(`Usage: /memory ${action} <id>`);
+        if (/^approve$/i.test(action)) {
+          const entry = await memoryStore.approve(access.userId, id);
+          await sendChunkedMarkdown(
+            ctx,
+            `Memory ${entry.id.slice(0, 8)} approved. It will be eligible for the next new Codex thread.`
+          );
+          return;
+        }
+        if (/^reject$/i.test(action)) {
+          await memoryStore.reject(access.userId, id);
+        } else {
+          await memoryStore.forget(access.userId, id);
+        }
+        await sendChunkedMarkdown(ctx, `Memory ${id} removed.`);
+        return;
+      }
+
+      if (!/^remember$/i.test(action)) {
+        throw new Error(
+          "Usage: /memory list | /memory remember [--global|--project|--skill name] <text> | /memory approve|reject|forget <id>"
+        );
+      }
+
+      const scope: MemoryScope = { ownerUserId: access.userId };
+      let contentParts = [...tail];
+      const scopeFlag = contentParts[0]?.toLowerCase();
+      if (scopeFlag === "--global") {
+        contentParts = contentParts.slice(1);
+      } else if (scopeFlag === "--project") {
+        scope.projectPath = ptyManager.getStatus(ctx.chat.id).workdir;
+        contentParts = contentParts.slice(1);
+      } else if (scopeFlag === "--skill") {
+        const skill = contentParts[1];
+        if (!skill)
+          throw new Error("Usage: /memory remember --skill <name> <text>");
+        scope.skill = skill.toLowerCase();
+        contentParts = contentParts.slice(2);
+      } else {
+        scope.conversationKey = access.conversationKey;
+      }
+
+      const proposal = await memoryStore.propose(scope, contentParts.join(" "));
+      const state = proposal.duplicate
+        ? "already exists"
+        : proposal.entry.status === "pending"
+          ? "staged; approve it with /memory approve " +
+            proposal.entry.id.slice(0, 8)
+          : "saved";
+      await sendChunkedMarkdown(
+        ctx,
+        `Memory ${proposal.entry.id.slice(0, 8)} ${state}. Scope: ${formatMemoryScope(proposal.entry.scope)}.`
+      );
+    } catch (error) {
+      await sendChunkedMarkdown(
+        ctx,
+        `Memory update failed: ${toErrorMessage(error)}`
       );
     }
   });

@@ -10,6 +10,14 @@ interface ReplyRecord {
 }
 
 interface TestContext {
+  state: {
+    codexSmith: {
+      userId: string;
+      chatId: string;
+      conversationKey: string;
+      isAdmin: boolean;
+    };
+  };
   chat: {
     id: number;
   };
@@ -48,6 +56,14 @@ class FakeBot {
 function createContext(text: string, chatId = 1): TestContext {
   const replies: ReplyRecord[] = [];
   return {
+    state: {
+      codexSmith: {
+        userId: String(chatId),
+        chatId: String(chatId),
+        conversationKey: `dm:${chatId}`,
+        isAdmin: true
+      }
+    },
     chat: {
       id: chatId
     },
@@ -83,6 +99,7 @@ function createDependencies(
     devStop?: () => boolean;
     devLogs?: () => string;
     devUrl?: () => string | null;
+    memoryStore?: Record<string, unknown>;
   } = {}
 ) {
   const bot = new FakeBot();
@@ -211,11 +228,48 @@ function createDependencies(
     } as any,
     scheduler: {
       triggerDailySummaryNow: async () => {}
-    } as any
+    } as any,
+    memoryStore: overrides.memoryStore as any
   });
 
   return { bot };
 }
+
+test("memory command stages a conversation-scoped record", async () => {
+  const proposals: Array<Record<string, unknown>> = [];
+  const { bot } = createDependencies({
+    memoryStore: {
+      isEnabled: () => true,
+      list: () => [],
+      propose: async (scope: Record<string, unknown>, content: string) => {
+        proposals.push({ scope, content });
+        return {
+          duplicate: false,
+          entry: {
+            id: "memory-12345678",
+            scope,
+            content,
+            status: "pending"
+          }
+        };
+      }
+    }
+  });
+  const ctx = createContext("/memory remember prefers concise replies");
+  const handler = bot.commands.get("memory");
+
+  if (!handler) throw new Error("Expected /memory handler to be registered");
+  await handler(ctx);
+
+  assert.deepEqual(proposals, [
+    {
+      scope: { ownerUserId: "1", conversationKey: "dm:1" },
+      content: "prefers concise replies"
+    }
+  ]);
+  assert.match(ctx.replies[0].text, /staged/i);
+  assert.equal(ctx.replies[0].text.includes("memory\\-1"), true);
+});
 
 test("dev start reports the selected frontend script", async () => {
   const { bot } = createDependencies({

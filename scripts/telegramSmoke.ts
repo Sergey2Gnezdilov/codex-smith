@@ -65,7 +65,7 @@ if (expectedUsername && botUser.username !== expectedUsername) {
 }
 
 if (smokeChatId) {
-  const message = `codex-telegram-claws smoke check ${new Date().toISOString()}`;
+  const message = `codex-smith smoke check ${new Date().toISOString()}`;
   const { statusCode: sendStatusCode, payload: sendPayload } =
     await requestTelegramJson<TelegramApiResponse<TelegramSendMessageResult>>({
       apiBase,

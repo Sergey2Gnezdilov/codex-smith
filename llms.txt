@@ -1,35 +1,30 @@
-# CodexClaw
+# Codex Smith
 
-> A Telegram bot for remote access to OpenAI Codex with full AI assistance, MCP integration, and session persistence.
+> A self-hosted Telegram control plane for local OpenAI Codex agents.
 
-## What is CodexClaw?
+## Summary
 
-CodexClaw connects Telegram to Codex and routes tasks to the right execution surface:
-- Coding tasks → Codex SDK threads or Codex CLI/PTy sessions
-- Explicit tool tasks → Subagents (MCP, GitHub Skill)
-- Proactive automation → Cron scheduler for daily summaries
+Codex Smith connects Telegram to a local Codex installation. The official Codex SDK
+is the primary backend, with `codex exec` and CLI/PTy fallbacks. It persists threads
+per chat and repository, streams agent events, switches projects below an allowlisted
+workspace root, and provides explicit GitHub and MCP operations.
 
-## Key Features
+## Security Model
 
-- Two Codex backends: SDK (preferred) and CLI/PTy (legacy fallback)
-- Project-scoped conversation state per chat + repo
-- Workspace contention guard — prevents concurrent writes
-- MCP and GitHub subagent routing
-- Streaming output with reasoning visualization
-- Zero-trust access with whitelist-only users
-- Frontend debugging layer (start/stop/logs dev servers)
-- Safe shell access (optional, read-only by default)
+- Telegram user allowlist is mandatory
+- Default Codex sandbox is `workspace-write`
+- Default approval policy is `on-request`
+- Codex network access and the bot shell are disabled by default
+- One active bot-managed writer is allowed per working directory
+- Credentials and runtime state are excluded from version control
 
-## Architecture
+## Stack
 
-Telegram Message → handlers.ts → router.ts → (Codex SDK | Codex CLI | Subagents) → formatter.ts → Telegram
+TypeScript, Node.js 20+, `@openai/codex-sdk`, Telegraf, node-pty, node-cron, MCP SDK.
 
-## Tech Stack
+## Repository
 
-TypeScript, Node.js 20+, @openai/codex-sdk, telegraf, node-pty, node-cron, MCP SDK
-
-## Links
-
-- Repository: https://github.com/MackDing/CodexClaw
-- Author: https://github.com/MackDing
-- OPC Hub: https://opc.ren
+- Current URL: https://github.com/Sergey2Gnezdilov/CodexClaw
+- Planned repository slug: `codex-smith`
+- Origin: https://github.com/MackDing/CodexClaw
+- License: MIT

@@ -3,15 +3,29 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadConfig } from "../src/config.js";
+import {
+  loadConfig,
+  resolveMemoryFile,
+  resolveStateFile
+} from "../src/config.js";
 
 const ENV_KEYS = [
   "BOT_TOKEN",
   "TELEGRAM_API_BASE",
   "TELEGRAM_PROXY_URL",
   "ALLOWED_USER_IDS",
+  "GROUP_ALLOWED_USER_IDS",
+  "ADMIN_USER_IDS",
+  "ADMIN_ONLY_COMMANDS",
+  "GROUP_REQUIRE_MENTION",
+  "GROUP_CONVERSATION_SCOPE",
   "PROACTIVE_USER_IDS",
   "STATE_FILE",
+  "MEMORY_ENABLED",
+  "MEMORY_FILE",
+  "MEMORY_REQUIRE_APPROVAL",
+  "MEMORY_MAX_ENTRY_CHARS",
+  "MEMORY_MAX_CONTEXT_CHARS",
   "CODEX_BACKEND",
   "CODEX_COMMAND",
   "CODEX_ARGS",
@@ -83,15 +97,10 @@ function withMutedWarnings<T>(fn: () => T): T {
 }
 
 test("loadConfig parses env values into runtime config", () => {
-  const stateFile = path.join(
-    os.tmpdir(),
-    "codex-telegram-claws-runtime-state.json"
-  );
-  const extraDir = path.join(os.tmpdir(), "codex-telegram-claws-sdk-extra");
-  const extraDirTwo = path.join(
-    os.tmpdir(),
-    "codex-telegram-claws-sdk-extra-two"
-  );
+  const stateFile = path.join(os.tmpdir(), "codex-smith-runtime-state.json");
+  const memoryFile = path.join(os.tmpdir(), "codex-smith-memory.json");
+  const extraDir = path.join(os.tmpdir(), "codex-smith-sdk-extra");
+  const extraDirTwo = path.join(os.tmpdir(), "codex-smith-sdk-extra-two");
   fs.mkdirSync(extraDir, { recursive: true });
   fs.mkdirSync(extraDirTwo, { recursive: true });
   const config = withEnv(
@@ -100,8 +109,18 @@ test("loadConfig parses env values into runtime config", () => {
       TELEGRAM_API_BASE: "https://telegram.example/api/",
       TELEGRAM_PROXY_URL: "http://127.0.0.1:7890",
       ALLOWED_USER_IDS: "1, 2",
+      GROUP_ALLOWED_USER_IDS: "3, 4",
+      ADMIN_USER_IDS: "1",
+      ADMIN_ONLY_COMMANDS: "restart, sh",
+      GROUP_REQUIRE_MENTION: "false",
+      GROUP_CONVERSATION_SCOPE: "shared",
       PROACTIVE_USER_IDS: "2",
       STATE_FILE: stateFile,
+      MEMORY_ENABLED: "true",
+      MEMORY_FILE: memoryFile,
+      MEMORY_REQUIRE_APPROVAL: "false",
+      MEMORY_MAX_ENTRY_CHARS: "900",
+      MEMORY_MAX_CONTEXT_CHARS: "2400",
       CODEX_BACKEND: "sdk",
       CODEX_COMMAND: "codex",
       CODEX_ARGS: '--approval-mode auto "--model gpt-5"',
@@ -138,10 +157,21 @@ test("loadConfig parses env values into runtime config", () => {
   );
 
   assert.equal(config.telegram.botToken, "telegram-token");
+  assert.equal(config.app.name, "Codex Smith");
   assert.equal(config.telegram.apiBase, "https://telegram.example/api");
   assert.equal(config.telegram.proxyUrl, "http://127.0.0.1:7890");
   assert.equal(config.app.stateFile, stateFile);
+  assert.equal(config.memory.enabled, true);
+  assert.equal(config.memory.file, memoryFile);
+  assert.equal(config.memory.requireApproval, false);
+  assert.equal(config.memory.maxEntryChars, 900);
+  assert.equal(config.memory.maxContextChars, 2400);
   assert.deepEqual(config.telegram.allowedUserIds, ["1", "2"]);
+  assert.deepEqual(config.telegram.groupAllowedUserIds, ["3", "4"]);
+  assert.deepEqual(config.telegram.adminUserIds, ["1"]);
+  assert.deepEqual(config.telegram.adminOnlyCommands, ["restart", "sh"]);
+  assert.equal(config.telegram.groupRequireMention, false);
+  assert.equal(config.telegram.groupConversationScope, "shared");
   assert.deepEqual(config.telegram.proactiveUserIds, ["2"]);
   assert.equal(config.runner.backend, "sdk");
   assert.equal(config.runner.command, "codex");
@@ -189,6 +219,26 @@ test("loadConfig parses env values into runtime config", () => {
   assert.equal(config.github.e2eCommand, "npm test");
 });
 
+test("resolveStateFile preserves a legacy state file when the new default does not exist", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-smith-state-"));
+  const legacy = path.join(root, ".codex-telegram-claws-state.json");
+  fs.writeFileSync(legacy, "{}");
+
+  assert.equal(resolveStateFile(undefined, root), legacy);
+  assert.equal(
+    resolveStateFile("custom-state.json", root),
+    path.resolve("custom-state.json")
+  );
+});
+
+test("resolveMemoryFile uses the Codex Smith local memory default", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-smith-memory-"));
+  assert.equal(
+    resolveMemoryFile(undefined, root),
+    path.join(root, ".codex-smith-memory.json")
+  );
+});
+
 test("loadConfig requires at least one allowed user", () => {
   assert.throws(
     () =>
@@ -201,6 +251,30 @@ test("loadConfig requires at least one allowed user", () => {
       ),
     /ALLOWED_USER_IDS must contain at least one Telegram user id/
   );
+});
+
+test("loadConfig defaults to safe per-user group access", () => {
+  const config = withEnv(
+    {
+      BOT_TOKEN: "telegram-token",
+      ALLOWED_USER_IDS: "1,2"
+    },
+    () => loadConfig()
+  );
+
+  assert.deepEqual(config.telegram.groupAllowedUserIds, []);
+  assert.deepEqual(config.telegram.adminUserIds, ["1"]);
+  assert.equal(config.telegram.groupRequireMention, true);
+  assert.equal(config.telegram.groupConversationScope, "per-user");
+  assert.deepEqual(config.telegram.adminOnlyCommands, [
+    "restart",
+    "auto",
+    "sh",
+    "dev",
+    "cron_now",
+    "gh",
+    "mcp"
+  ]);
 });
 
 test("loadConfig falls back to the current working directory when configured paths do not exist", () => {

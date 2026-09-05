@@ -74,7 +74,7 @@ test("github skill creates a sibling repo under workspace root and returns a rep
   const workspaceRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "claws-github-skill-")
   );
-  const currentRepo = path.join(workspaceRoot, "CodexClaw");
+  const currentRepo = path.join(workspaceRoot, "codex-smith");
   fs.mkdirSync(path.join(currentRepo, ".git"), { recursive: true });
 
   const skill = new GitHubSkill({
@@ -153,7 +153,7 @@ test("github skill infers a repo name from a natural-language creation request",
   const workspaceRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "claws-github-skill-natural-language-")
   );
-  const currentRepo = path.join(workspaceRoot, "CodexClaw");
+  const currentRepo = path.join(workspaceRoot, "codex-smith");
   fs.mkdirSync(path.join(currentRepo, ".git"), { recursive: true });
 
   const skill = new GitHubSkill({
@@ -199,7 +199,7 @@ test("github skill infers a repo name from a natural-language creation request",
     }) as any;
 
   const result = await skill.createRepoFromText(
-    "create repo, create a web-based five-in-a-row game, push them and run it. requiring attribution to CodexClaw.",
+    "create repo, create a web-based five-in-a-row game, push them and run it. requiring attribution to Codex Smith.",
     currentRepo,
     "en"
   );

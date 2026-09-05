@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the target architecture when `CodexClaw` is deployed as a financial enterprise engineering assistant for multiple subsidiary CTO teams. The current repository is a strong single-host beta. The enterprise target is a controlled multi-host platform.
+This document defines the target architecture when `Codex Smith` is deployed as a financial enterprise engineering assistant for multiple subsidiary CTO teams. The current repository is a strong single-host beta. The enterprise target is a controlled multi-host platform.
 
 ## Target Operating Model
 

@@ -15,15 +15,16 @@ import stripAnsi from "strip-ansi";
 import type { AppConfig } from "../config.js";
 import { formatPtyOutput, splitTelegramMessage } from "../bot/formatter.js";
 import { normalizeLanguage, t, type Locale } from "../bot/i18n.js";
+import {
+  getLegacyConversationKey,
+  resolveConversationKey
+} from "../bot/accessContext.js";
 import { toErrorMessage } from "../lib/errors.js";
 import { repairNodePtySpawnHelperPermissions } from "./ptyPreflight.js";
 type SessionMode = "pty" | "exec" | "sdk";
 type ExitSignal = number | NodeJS.Signals | null;
 type WorkflowPhase =
-  | "brainstorming"
-  | "planning"
-  | "implementing"
-  | "verifying";
+  "brainstorming" | "planning" | "implementing" | "verifying";
 
 interface PtyProcess {
   write(input: string): void;
@@ -94,6 +95,7 @@ interface ChatRuntimeState {
 
 interface RunnerSession {
   chatId: string;
+  telegramChatId: string;
   mode: SessionMode;
   workdir: string;
   model: string | null;
@@ -117,6 +119,7 @@ interface RunnerSession {
 
 interface SessionOptions {
   workdir?: string;
+  telegramChatId?: string | number;
   resumeSessionId?: string;
   initialPrompt?: string;
   fullAuto?: boolean;
@@ -177,9 +180,7 @@ export type SendPromptResult =
   | SendPromptWorkspaceBusyResult;
 
 export type ContinuePendingPromptResult =
-  | SendPromptStartedResult
-  | SendPromptBusyResult
-  | NoPendingPromptResult;
+  SendPromptStartedResult | SendPromptBusyResult | NoPendingPromptResult;
 
 interface StoredProjectConversationState {
   lastSessionId?: unknown;
@@ -247,6 +248,10 @@ interface PtyManagerOptions {
   config: Pick<AppConfig, "runner" | "workspace" | "reasoning" | "mcp">;
   onChange?: (snapshot: PtyManagerSnapshot) => void;
   codexClientFactory?: (options: CodexOptions) => CodexClientLike;
+  initialContextProvider?: (input: {
+    conversationKey: string;
+    workdir: string;
+  }) => Promise<string> | string;
 }
 
 function isMessageNotModified(error: unknown): boolean {
@@ -431,16 +436,19 @@ export class PtyManager {
   ) => CodexClientLike;
   private codexClient: CodexClientLike | null;
   private readonly onChange?: (snapshot: PtyManagerSnapshot) => void;
+  private readonly initialContextProvider?: PtyManagerOptions["initialContextProvider"];
 
   constructor({
     bot,
     config,
     onChange,
-    codexClientFactory
+    codexClientFactory,
+    initialContextProvider
   }: PtyManagerOptions) {
     this.bot = bot;
     this.config = config;
     this.onChange = onChange;
+    this.initialContextProvider = initialContextProvider;
     this.codexClientFactory =
       codexClientFactory ??
       ((options: CodexOptions) =>
@@ -462,9 +470,18 @@ export class PtyManager {
   }
 
   ensureChatState(chatId: string | number): ChatRuntimeState {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const existing = this.chatState.get(key);
     if (existing) return existing;
+
+    const legacyKey = getLegacyConversationKey(key);
+    const legacy = legacyKey ? this.chatState.get(legacyKey) : undefined;
+    if (legacy && legacyKey) {
+      this.chatState.delete(legacyKey);
+      this.chatState.set(key, legacy);
+      this.onChange?.(this.exportState());
+      return legacy;
+    }
 
     const state: ChatRuntimeState = {
       preferredModel: null,
@@ -496,7 +513,7 @@ export class PtyManager {
     chatId: string | number,
     workdir = this.getWorkdir(chatId)
   ): ProjectConversationState {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const state = this.ensureChatState(key);
     const resolvedWorkdir = path.resolve(
       workdir || state.currentWorkdir || this.config.runner.cwd
@@ -714,7 +731,7 @@ export class PtyManager {
     chatId: string | number,
     workdir: string
   ): RunnerSession | null {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const resolvedWorkdir = path.resolve(workdir);
 
     for (const session of this.sessions.values()) {
@@ -793,7 +810,7 @@ export class PtyManager {
     chatId: string | number,
     targetName: string
   ): { workdir: string; relativePath: string } {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const requested = String(targetName || "").trim();
     if (!requested) {
       throw new Error(t(this.getLanguage(key), "projectNameRequired"));
@@ -842,7 +859,7 @@ export class PtyManager {
     workdir: string;
     relativePath: string;
   } {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const state = this.ensureChatState(key);
     const previous = (state.recentWorkdirs || []).find(
       (workdir) => workdir !== state.currentWorkdir
@@ -861,11 +878,18 @@ export class PtyManager {
     options: SessionOptions = {}
   ): string[] {
     const state = this.ensureChatState(chatId);
-    const args = options.resumeSessionId ? ["exec", "resume"] : ["exec"];
+    const args: string[] = [];
 
     if (options.fullAuto) {
-      args.push("--full-auto");
+      args.push(
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        this.config.runner.sdkThreadOptions.sandboxMode || "workspace-write"
+      );
     }
+
+    args.push(...(options.resumeSessionId ? ["exec", "resume"] : ["exec"]));
 
     if (state.preferredModel) {
       args.push("-m", state.preferredModel);
@@ -903,7 +927,7 @@ export class PtyManager {
     mode: SessionMode,
     options: SessionOptions = {}
   ): RunnerSession {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const state = this.ensureChatState(key);
     const workdir = path.resolve(
       options.workdir || state.currentWorkdir || this.config.runner.cwd
@@ -911,6 +935,7 @@ export class PtyManager {
     const projectState = this.ensureProjectState(key, workdir);
     const session: RunnerSession = {
       chatId: key,
+      telegramChatId: String(options.telegramChatId ?? chatId),
       mode,
       workdir,
       model: state.preferredModel,
@@ -1010,7 +1035,7 @@ export class PtyManager {
     if (this.isVerbose(session.chatId)) {
       await this.bot.telegram
         .sendMessage(
-          session.chatId,
+          session.telegramChatId,
           t(this.getLanguage(session.chatId), "codexSessionExited", {
             mode: session.mode,
             exitCode,
@@ -1134,7 +1159,7 @@ export class PtyManager {
     proc.on("error", async (error) => {
       await this.bot.telegram
         .sendMessage(
-          session.chatId,
+          session.telegramChatId,
           t(this.getLanguage(session.chatId), "codexExecFailed", {
             error: error.message
           })
@@ -1234,7 +1259,7 @@ export class PtyManager {
         exitCode = 1;
         await this.bot.telegram
           .sendMessage(
-            session.chatId,
+            session.telegramChatId,
             t(this.getLanguage(session.chatId), "codexExecFailed", {
               error: toErrorMessage(error)
             })
@@ -1254,7 +1279,7 @@ export class PtyManager {
       return null;
     }
 
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const existing = this.sessions.get(key);
     if (existing) return existing;
 
@@ -1274,7 +1299,7 @@ export class PtyManager {
   }
 
   enqueueFlush(chatId: string | number): void {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const session = this.sessions.get(key);
     if (!session) return;
 
@@ -1284,7 +1309,7 @@ export class PtyManager {
   }
 
   async flushToTelegram(chatId: string | number): Promise<void> {
-    const session = this.sessions.get(String(chatId));
+    const session = this.sessions.get(resolveConversationKey(chatId));
     if (!session) return;
 
     const rawTail = session.rawBuffer.slice(-60000);
@@ -1309,7 +1334,7 @@ export class PtyManager {
       if (existingMessageId) {
         try {
           await this.bot.telegram.editMessageText(
-            chatId,
+            session.telegramChatId,
             existingMessageId,
             undefined,
             chunk,
@@ -1321,27 +1346,37 @@ export class PtyManager {
           nextIds.push(existingMessageId);
         } catch (error) {
           if (!isMessageNotModified(error)) {
-            const sent = await this.bot.telegram.sendMessage(chatId, chunk, {
-              parse_mode: "MarkdownV2",
-              disable_web_page_preview: true
-            });
+            const sent = await this.bot.telegram.sendMessage(
+              session.telegramChatId,
+              chunk,
+              {
+                parse_mode: "MarkdownV2",
+                disable_web_page_preview: true
+              }
+            );
             nextIds.push(sent.message_id);
           } else {
             nextIds.push(existingMessageId);
           }
         }
       } else {
-        const sent = await this.bot.telegram.sendMessage(chatId, chunk, {
-          parse_mode: "MarkdownV2",
-          disable_web_page_preview: true
-        });
+        const sent = await this.bot.telegram.sendMessage(
+          session.telegramChatId,
+          chunk,
+          {
+            parse_mode: "MarkdownV2",
+            disable_web_page_preview: true
+          }
+        );
         nextIds.push(sent.message_id);
       }
     }
 
     for (let i = chunks.length; i < existing.length; i += 1) {
       const staleId = existing[i];
-      await this.bot.telegram.deleteMessage(chatId, staleId).catch(() => {});
+      await this.bot.telegram
+        .deleteMessage(session.telegramChatId, staleId)
+        .catch(() => {});
     }
 
     session.streamMessageIds = nextIds;
@@ -1352,10 +1387,22 @@ export class PtyManager {
     prompt: string,
     options: SendPromptOptions = {}
   ): Promise<SendPromptResult> {
-    const chatId = String(ctx.chat.id);
+    const telegramChatId = String(ctx.chat.id);
+    const chatId = resolveConversationKey(telegramChatId);
     const workdir = this.getWorkdir(chatId);
     const projectState = this.ensureProjectState(chatId);
     const state = this.ensureChatState(chatId);
+    const withInitialContext = async (value: string): Promise<string> => {
+      const memoryContext = String(
+        (await this.initialContextProvider?.({
+          conversationKey: chatId,
+          workdir
+        })) || ""
+      ).trim();
+      return memoryContext
+        ? `${memoryContext}\n\n<user_request>\n${value}\n</user_request>`
+        : value;
+    };
 
     if (!options.allowWorkspaceConflict) {
       const conflict = this.findWorkspaceConflict(chatId, workdir);
@@ -1390,7 +1437,9 @@ export class PtyManager {
       }
 
       const resumed = Boolean(projectState.lastSessionId && !options.forceExec);
-      const session = this.startSdkSessionWithOptions(chatId, prompt, {
+      const initialPrompt = resumed ? prompt : await withInitialContext(prompt);
+      const session = this.startSdkSessionWithOptions(chatId, initialPrompt, {
+        telegramChatId,
         fullAuto: Boolean(options.fullAuto),
         extraArgs: options.extraArgs || [],
         workdir,
@@ -1403,13 +1452,13 @@ export class PtyManager {
 
       if (options.notice && this.isVerbose(chatId)) {
         await this.bot.telegram
-          .sendMessage(chatId, options.notice)
+          .sendMessage(telegramChatId, options.notice)
           .catch(() => {});
       }
 
       if (!session.streamMessageIds.length && this.isVerbose(chatId)) {
         const sent = await this.bot.telegram.sendMessage(
-          chatId,
+          telegramChatId,
           resumed
             ? t(this.getLanguage(chatId), "sessionRestored", {
                 project: this.getRelativeWorkdir(chatId),
@@ -1439,15 +1488,20 @@ export class PtyManager {
         };
       }
 
-      this.startExecSessionWithOptions(chatId, prompt, {
-        fullAuto: Boolean(options.fullAuto),
-        extraArgs: options.extraArgs || [],
-        workdir,
-        trackConversation: false
-      });
+      this.startExecSessionWithOptions(
+        chatId,
+        await withInitialContext(prompt),
+        {
+          telegramChatId,
+          fullAuto: Boolean(options.fullAuto),
+          extraArgs: options.extraArgs || [],
+          workdir,
+          trackConversation: false
+        }
+      );
 
       if (options.notice && this.isVerbose(chatId)) {
-        await this.bot.telegram.sendMessage(chatId, options.notice);
+        await this.bot.telegram.sendMessage(telegramChatId, options.notice);
       }
 
       return {
@@ -1473,21 +1527,27 @@ export class PtyManager {
       };
     }
 
+    const initialPrompt = projectState.lastSessionId
+      ? prompt
+      : await withInitialContext(prompt);
     let session = this.ensureSession(
       chatId,
       projectState.lastSessionId
         ? {
+            telegramChatId,
             workdir,
             resumeSessionId: projectState.lastSessionId,
-            initialPrompt: prompt
+            initialPrompt
           }
         : {
+            telegramChatId,
             workdir
           }
     );
 
     if (!session) {
-      session = this.startExecSessionWithOptions(chatId, prompt, {
+      this.startExecSessionWithOptions(chatId, initialPrompt, {
+        telegramChatId,
         fullAuto: Boolean(options.fullAuto),
         extraArgs: options.extraArgs || [],
         workdir,
@@ -1495,7 +1555,7 @@ export class PtyManager {
       });
       if (this.isVerbose(chatId)) {
         await this.bot.telegram.sendMessage(
-          chatId,
+          telegramChatId,
           projectState.lastSessionId
             ? t(this.getLanguage(chatId), "execFallbackResume")
             : t(this.getLanguage(chatId), "execFallbackSingle")
@@ -1511,7 +1571,7 @@ export class PtyManager {
 
     if (!session.streamMessageIds.length && this.isVerbose(chatId)) {
       const sent = await this.bot.telegram.sendMessage(
-        chatId,
+        telegramChatId,
         projectState.lastSessionId
           ? t(this.getLanguage(chatId), "sessionRestored", {
               project: this.getRelativeWorkdir(chatId),
@@ -1532,7 +1592,7 @@ export class PtyManager {
       };
     }
 
-    session.write?.(`${prompt}\r`);
+    session.write?.(`${initialPrompt}\r`);
     return {
       started: true,
       mode: "pty"
@@ -1542,7 +1602,7 @@ export class PtyManager {
   async continuePendingPrompt(
     ctx: SendPromptContext
   ): Promise<ContinuePendingPromptResult> {
-    const chatId = String(ctx.chat.id);
+    const chatId = resolveConversationKey(ctx.chat.id);
     const state = this.ensureChatState(chatId);
     const pending = state.pendingPrompt;
 
@@ -1578,7 +1638,7 @@ export class PtyManager {
   }
 
   interrupt(chatId: string | number): boolean {
-    const session = this.sessions.get(String(chatId));
+    const session = this.sessions.get(resolveConversationKey(chatId));
     if (!session) return false;
     session.interrupt?.();
     return true;
@@ -1588,7 +1648,7 @@ export class PtyManager {
     closed: boolean;
     workdir: string;
   } {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const workdir = this.getWorkdir(key);
     const projectState = this.ensureProjectState(key, workdir);
     const closed = this.closeSession(key);
@@ -1607,7 +1667,7 @@ export class PtyManager {
   }
 
   closeSession(chatId: string | number): boolean {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const session = this.sessions.get(key);
     if (!session) return false;
 
@@ -1768,7 +1828,7 @@ export class PtyManager {
   }
 
   getStatus(chatId: string | number): PtyManagerStatus {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const state = this.ensureChatState(key);
     const projectState = this.ensureProjectState(key, state.currentWorkdir);
     const session = this.sessions.get(key);

@@ -49,7 +49,7 @@ Use operator-owned local credentials or GitHub secrets for live checks. Do not p
 Manual checks:
 
 - verify `/status`, `/repo`, `/continue`, `/language`, `/verbose`, `/mcp list`, and `/gh` on a real Telegram chat
-- verify PTY mode is active on the target host
+- verify the SDK backend is active on the target host; test PTY mode only when it is part of the release scope
 - verify cron and proactive push configuration
 - verify only one bot instance is polling
 - verify no second bot-managed chat can start a same-workdir Codex run without the explicit `/continue` override
@@ -68,13 +68,13 @@ Keep GitHub repository topics aligned with the current product surface. The targ
 - `mcp`
 - `subagents`
 - `developer-tools`
-- `claude-code`
+- `codex-cli`
 - `skill`
 
 Apply them with GitHub CLI:
 
 ```bash
-gh repo edit MackDing/CodexClaw \
+gh repo edit Sergey2Gnezdilov/codex-smith \
   --add-topic telegram-bot \
   --add-topic codex \
   --add-topic openai \
@@ -84,7 +84,7 @@ gh repo edit MackDing/CodexClaw \
   --add-topic mcp \
   --add-topic subagents \
   --add-topic developer-tools \
-  --add-topic claude-code \
+  --add-topic codex-cli \
   --add-topic skill
 ```
 
@@ -94,7 +94,7 @@ gh repo edit MackDing/CodexClaw \
 git checkout main
 git pull --ff-only
 BOT_TOKEN=dummy-token ALLOWED_USER_IDS=1 npm run release:check
-git tag v0.2.3
+git tag v0.3.0
 git push origin main --tags
 ```
 
@@ -105,7 +105,7 @@ Pushing a `v*` tag triggers the GitHub release workflow.
 ```bash
 git checkout <previous-stable-tag>
 npm install
-pm2 restart CodexClaw
+pm2 restart codex-smith
 ```
 
 After rollback, rerun:

@@ -22,10 +22,10 @@ test("languageLabel resolves localized language names", () => {
 test("t falls back through locale catalogs in the documented order", () => {
   assert.equal(t("zh-HK", "usagePlan"), "用法: /plan <task>");
   assert.deepEqual(t("zh-HK", "startLines"), [
-    "CodexClaw 已就绪。",
+    "Codex Smith 已就绪。",
     "普通消息和编码任务会路由到 Codex。",
     "Bot 侧 MCP 仅通过显式 /mcp 命令调用。",
-    "试试: /status, /repo, /pwd, /exec, /auto, /plan, /model, /language, /verbose, /skill, /new, /sh",
+    "试试: /status, /repo, /pwd, /exec, /auto, /plan, /model, /language, /verbose, /skill, /memory, /new, /sh",
     'GitHub 示例: /gh commit "feat: init"'
   ]);
 });

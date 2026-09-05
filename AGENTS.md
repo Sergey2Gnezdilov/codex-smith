@@ -36,7 +36,7 @@
 
 - Do not edit `.git/` or `node_modules/`.
 - Do not commit or rewrite `.env`, secrets, Telegram tokens, or local session artifacts.
-- Do not manually edit `.codex-telegram-claws-state.json`; it is runtime state.
+- Do not manually edit `.codex-smith-state.json` or the legacy `.codex-telegram-claws-state.json`; they are runtime state.
 - Avoid changing files outside this repository root, even when `/repo` or shell features reference other workspaces.
 
 ## Contribution Rules

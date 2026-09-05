@@ -200,7 +200,6 @@ export function splitTelegramMessage(
 
     if (current) {
       chunks.push(current);
-      current = "";
     }
 
     if (line.length <= maxLength) {

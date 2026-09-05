@@ -1,48 +1,42 @@
 ---
-name: CodexClaw
-description: Install and operate a Telegram bot that exposes Codex, MCP, GitHub subagents, repo switching, and minimal frontend dev-server control.
+name: Codex Smith
+description: Install and operate a secure Telegram control plane for local Codex agents, repository switching, MCP, GitHub actions, and scheduled automation.
 ---
 
-# CodexClaw
+# Codex Smith
 
-## What This Skill Does
+## Purpose
 
-- runs Codex through Telegram
-- keeps coding sessions scoped to `chat + repo`
-- exposes `/repo`, `/status`, `/skill`, `/gh`, `/mcp`, and `/dev`
-- supports frontend repo debugging with `/dev start|stop|status|logs|url`
+Use Codex from Telegram while the agent and project files remain on an operator-owned
+machine. Prefer the Codex SDK backend; use `codex exec` or PTY mode only as a fallback.
 
 ## Install
 
 ```bash
-git clone https://github.com/MackDing/CodexClaw.git
-cd CodexClaw
+git clone https://github.com/Sergey2Gnezdilov/CodexClaw.git codex-smith
+cd codex-smith
 npm install
 cp .env.example .env
 ```
 
-## Required Env
-
-Set at least:
+## Minimum Configuration
 
 ```bash
 BOT_TOKEN=123456789:telegram-token
 ALLOWED_USER_IDS=123456789
-STATE_FILE=.codex-telegram-claws-state.json
-WORKSPACE_ROOT=.
-CODEX_WORKDIR=.
+STATE_FILE=.codex-smith-state.json
+WORKSPACE_ROOT=/absolute/path/to/projects
+CODEX_WORKDIR=/absolute/path/to/projects/default-project
 CODEX_BACKEND=sdk
 ```
 
-## Start
+Keep shell execution disabled, use `workspace-write`, keep network access off by
+default, and scope `WORKSPACE_ROOT` narrowly.
+
+## Start And Verify
 
 ```bash
 npm run start
-```
-
-## Verify
-
-```bash
 npm run check
 npm run lint
 npm run format:check
@@ -55,34 +49,13 @@ npm run healthcheck
 ```text
 /status
 /repo
-/skill
 /repo my-project
+/new
+/model
 /dev status
 /gh create repo my-new-repo
 /gh confirm
 ```
 
-## Frontend Debugging
-
-Use these commands inside the current repo selected by `/repo`:
-
-- `/dev start`
-- `/dev stop`
-- `/dev status`
-- `/dev logs`
-- `/dev url`
-- `/gh create repo ...`, `/gh push`, and `/gh commit "..."` are explicit write paths
-- `/gh confirm` executes the pending GitHub write action
-- plain-text `create repo`, `commit`, and `push` requests are blocked and turned into guidance
-
-Rules:
-
-- `dev` script is preferred
-- `start` script is used as fallback
-- frontend runtime is shared per repo, not per chat
-- `/dev` is not a general-purpose shell
-
-## Notes
-
-- `superpowers` is an internal workflow and shows up in `/status`, not as a toggleable `/skill`
-- `/sh` remains a restricted operator channel and is separate from `/dev`
+GitHub writes require explicit `/gh` commands and confirmation. `/sh` is a separate,
+restricted operator channel and is disabled by default.

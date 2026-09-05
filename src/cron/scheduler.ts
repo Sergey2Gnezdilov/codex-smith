@@ -142,7 +142,7 @@ export class Scheduler {
     const until = startOfToday.toISOString();
 
     let commitCount = 0;
-    let commitLines: string[] = [];
+    let commitLines: string[];
     let filesChanged = 0;
     let insertions = 0;
     let deletions = 0;

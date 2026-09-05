@@ -166,8 +166,8 @@ export class McpClient {
 
     const client = new Client(
       {
-        name: "CodexClaw",
-        version: "0.1.0"
+        name: "codex-smith",
+        version: "0.3.0"
       },
       {
         capabilities: {}

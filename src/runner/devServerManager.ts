@@ -7,10 +7,7 @@ import { toErrorMessage } from "../lib/errors.js";
 export type DevServerPackageManager = "npm" | "pnpm" | "yarn" | "bun";
 export type DevServerScriptName = "dev" | "start";
 export type DevServerLifecycleStatus =
-  | "stopped"
-  | "running"
-  | "exited"
-  | "failed";
+  "stopped" | "running" | "exited" | "failed";
 
 export interface DevServerStatus {
   running: boolean;

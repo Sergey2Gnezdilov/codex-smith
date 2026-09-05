@@ -3,4 +3,6 @@ node_modules/
 .DS_Store
 npm-debug.log*
 .codex-telegram-claws-state.json
+.codex-smith-state.json
+.codex-smith-memory.json
 bot.log

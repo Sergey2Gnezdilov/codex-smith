@@ -1,3 +1,8 @@
+import {
+  getLegacyConversationKey,
+  resolveConversationKey
+} from "../bot/accessContext.js";
+
 export interface SkillStatus {
   name: string;
   enabled: boolean;
@@ -49,9 +54,18 @@ export class SkillRegistry {
   }
 
   ensureChatState(chatId: string | number): ChatSkillState {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const existing = this.chatStates.get(key);
     if (existing) return existing;
+
+    const legacyKey = getLegacyConversationKey(key);
+    const legacy = legacyKey ? this.chatStates.get(legacyKey) : undefined;
+    if (legacy && legacyKey) {
+      this.chatStates.delete(legacyKey);
+      this.chatStates.set(key, legacy);
+      this.onChange?.(this.exportState());
+      return legacy;
+    }
 
     const state: ChatSkillState = {
       enabledSkills: new Set(this.skillNames)

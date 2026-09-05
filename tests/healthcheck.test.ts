@@ -9,8 +9,15 @@ import { resolveCommandPath, runHealthcheck } from "../src/ops/healthcheck.js";
 function createConfig(root: string): AppConfig {
   return {
     app: {
-      name: "CodexClaw",
-      stateFile: path.join(root, ".codex-telegram-claws-state.json")
+      name: "Codex Smith",
+      stateFile: path.join(root, ".codex-smith-state.json")
+    },
+    memory: {
+      enabled: true,
+      file: path.join(root, ".codex-smith-memory.json"),
+      requireApproval: true,
+      maxEntryChars: 1200,
+      maxContextChars: 3600
     },
     workspace: {
       root
@@ -20,6 +27,11 @@ function createConfig(root: string): AppConfig {
       apiBase: "https://api.telegram.org",
       proxyUrl: undefined,
       allowedUserIds: ["1"],
+      groupAllowedUserIds: [],
+      adminUserIds: ["1"],
+      adminOnlyCommands: ["restart"],
+      groupConversationScope: "per-user",
+      groupRequireMention: true,
       proactiveUserIds: []
     },
     runner: {

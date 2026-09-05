@@ -16,6 +16,8 @@ import { DevServerManager } from "./runner/devServerManager.js";
 import { Scheduler } from "./cron/scheduler.js";
 import { toErrorMessage } from "./lib/errors.js";
 import { createTelegramApiAgent } from "./lib/telegramApi.js";
+import { MemoryStore } from "./memory/memoryStore.js";
+import { getCurrentAccessState } from "./bot/accessContext.js";
 
 const config = loadConfig();
 const telegramApiAgent = createTelegramApiAgent(config.telegram.proxyUrl);
@@ -29,6 +31,7 @@ const bot = new Telegraf(config.telegram.botToken, {
   }
 });
 const stateStore = new RuntimeStateStore({ config });
+const memoryStore = new MemoryStore({ config });
 let mcpClient: McpClient | null = null;
 let skillRegistry: SkillRegistry | null = null;
 let ptyManager: PtyManager | null = null;
@@ -68,6 +71,7 @@ async function restartBotProcess(): Promise<void> {
 bot.use(createAuthMiddleware(config));
 
 const runtimeState = await stateStore.load();
+await memoryStore.load();
 mcpClient = new McpClient(config, {
   onChange: () => void saveRuntimeState()
 });
@@ -99,7 +103,16 @@ const router = new Router({
 ptyManager = new PtyManager({
   bot,
   config,
-  onChange: () => void saveRuntimeState()
+  onChange: () => void saveRuntimeState(),
+  initialContextProvider: ({ conversationKey, workdir }) => {
+    const access = getCurrentAccessState();
+    if (!access) return "";
+    return memoryStore.renderSnapshot({
+      ownerUserId: access.userId,
+      conversationKey,
+      projectPath: workdir
+    });
+  }
 });
 ptyManager.restoreState(runtimeState.runner);
 const shellManager = new ShellManager({
@@ -122,6 +135,7 @@ registerHandlers({
   skills,
   skillRegistry,
   scheduler,
+  memoryStore,
   adminActions: {
     restart: restartBotProcess
   }
@@ -134,7 +148,7 @@ bot.catch(async (error: unknown, ctx: any) => {
 });
 
 await bot.launch();
-console.log("CodexClaw started.");
+console.log("Codex Smith started.");
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`Shutting down by ${signal}...`);

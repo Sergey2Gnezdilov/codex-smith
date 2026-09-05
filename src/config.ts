@@ -12,21 +12,13 @@ dotenv.config();
 
 export type ReasoningMode = "quote" | "spoiler";
 export type RunnerBackend = "cli" | "sdk";
+export type GroupConversationScope = "per-user" | "shared";
 export type CodexApprovalPolicy =
-  | "never"
-  | "on-request"
-  | "on-failure"
-  | "untrusted";
+  "never" | "on-request" | "on-failure" | "untrusted";
 export type CodexSandboxMode =
-  | "read-only"
-  | "workspace-write"
-  | "danger-full-access";
+  "read-only" | "workspace-write" | "danger-full-access";
 export type CodexReasoningEffort =
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+  "minimal" | "low" | "medium" | "high" | "xhigh";
 export type CodexWebSearchMode = "disabled" | "cached" | "live";
 export type CodexConfigValue =
   | string
@@ -48,6 +40,13 @@ export interface AppConfig {
     name: string;
     stateFile: string;
   };
+  memory: {
+    enabled: boolean;
+    file: string;
+    requireApproval: boolean;
+    maxEntryChars: number;
+    maxContextChars: number;
+  };
   workspace: {
     root: string;
   };
@@ -56,6 +55,11 @@ export interface AppConfig {
     apiBase: string;
     proxyUrl?: string;
     allowedUserIds: string[];
+    groupAllowedUserIds: string[];
+    adminUserIds: string[];
+    adminOnlyCommands: string[];
+    groupConversationScope: GroupConversationScope;
+    groupRequireMention: boolean;
     proactiveUserIds: string[];
   };
   runner: {
@@ -152,7 +156,9 @@ function parseJson<T>(value: string | undefined, fallback: T): T {
     return JSON.parse(value) as T;
   } catch (error) {
     const message = toErrorMessage(error);
-    throw new Error(`Invalid JSON in environment variable: ${message}`);
+    throw new Error(`Invalid JSON in environment variable: ${message}`, {
+      cause: error
+    });
   }
 }
 
@@ -195,6 +201,28 @@ function resolveFile(value: string | undefined, fallback: string): string {
   }
 
   return candidate;
+}
+
+export function resolveStateFile(
+  value: string | undefined,
+  cwd = process.cwd()
+): string {
+  if (value?.trim()) {
+    return resolveFile(value, path.join(cwd, ".codex-smith-state.json"));
+  }
+
+  const current = path.join(cwd, ".codex-smith-state.json");
+  const legacy = path.join(cwd, ".codex-telegram-claws-state.json");
+  const fallback =
+    !fs.existsSync(current) && fs.existsSync(legacy) ? legacy : current;
+  return resolveFile(undefined, fallback);
+}
+
+export function resolveMemoryFile(
+  value: string | undefined,
+  cwd = process.cwd()
+): string {
+  return resolveFile(value, path.join(cwd, ".codex-smith-memory.json"));
 }
 
 function resolveDirectoryList(raw: unknown, name: string): string[] {
@@ -282,6 +310,19 @@ export function loadConfig(): AppConfig {
   const proactiveUserIds = parseCsv(
     process.env.PROACTIVE_USER_IDS || process.env.ALLOWED_USER_IDS
   );
+  const groupAllowedUserIds = parseCsv(process.env.GROUP_ALLOWED_USER_IDS);
+  const adminUserIds = parseCsv(
+    process.env.ADMIN_USER_IDS || allowedUserIds[0]
+  );
+  const adminOnlyCommands = parseCsv(
+    process.env.ADMIN_ONLY_COMMANDS || "restart,auto,sh,dev,cron_now,gh,mcp"
+  ).map((command) => command.replace(/^\//, "").toLowerCase());
+  const groupConversationScope: GroupConversationScope =
+    String(process.env.GROUP_CONVERSATION_SCOPE || "")
+      .trim()
+      .toLowerCase() === "shared"
+      ? "shared"
+      : "per-user";
   const runnerBackend = parseRunnerBackend(process.env.CODEX_BACKEND);
   const rawMcpServers = parseJson<unknown[]>(process.env.MCP_SERVERS, []);
   const mcpServers = Array.isArray(rawMcpServers)
@@ -372,11 +413,15 @@ export function loadConfig(): AppConfig {
 
   return {
     app: {
-      name: "CodexClaw",
-      stateFile: resolveFile(
-        process.env.STATE_FILE,
-        path.join(process.cwd(), ".codex-telegram-claws-state.json")
-      )
+      name: "Codex Smith",
+      stateFile: resolveStateFile(process.env.STATE_FILE)
+    },
+    memory: {
+      enabled: parseBoolean(process.env.MEMORY_ENABLED, true),
+      file: resolveMemoryFile(process.env.MEMORY_FILE),
+      requireApproval: parseBoolean(process.env.MEMORY_REQUIRE_APPROVAL, true),
+      maxEntryChars: parseNumber(process.env.MEMORY_MAX_ENTRY_CHARS, 1200),
+      maxContextChars: parseNumber(process.env.MEMORY_MAX_CONTEXT_CHARS, 3600)
     },
     workspace: {
       root: workspaceRoot
@@ -386,6 +431,14 @@ export function loadConfig(): AppConfig {
       apiBase: normalizeTelegramApiBase(process.env.TELEGRAM_API_BASE),
       proxyUrl: normalizeTelegramProxyUrl(process.env.TELEGRAM_PROXY_URL),
       allowedUserIds,
+      groupAllowedUserIds,
+      adminUserIds,
+      adminOnlyCommands,
+      groupConversationScope,
+      groupRequireMention: parseBoolean(
+        process.env.GROUP_REQUIRE_MENTION,
+        true
+      ),
       proactiveUserIds
     },
     runner: {

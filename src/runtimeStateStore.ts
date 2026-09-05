@@ -91,7 +91,10 @@ export class RuntimeStateStore {
     this.writeQueue = this.writeQueue
       .then(async () => {
         const tempFile = `${this.file}.tmp`;
-        await fs.writeFile(tempFile, payload, "utf8");
+        await fs.writeFile(tempFile, payload, {
+          encoding: "utf8",
+          mode: 0o600
+        });
         await fs.rename(tempFile, this.file);
       })
       .catch((error) => {

@@ -3,8 +3,7 @@ export type Locale = (typeof SUPPORTED_LANGUAGES)[number];
 
 type TranslationParams = Record<string, any>;
 type TranslationEntry =
-  | string
-  | ((params: TranslationParams) => string | string[]);
+  string | ((params: TranslationParams) => string | string[]);
 type TranslationCatalog = Record<string, TranslationEntry>;
 type TranslateFn = {
   (locale: string, key: ArrayMessageKey, params?: TranslationParams): string[];
@@ -40,10 +39,10 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
     buttonRefreshTestStatus: "Refresh test status",
     emptyResponse: "(empty response)",
     startLines: () => [
-      "CodexClaw ready.",
+      "Codex Smith ready.",
       "Plain messages and coding tasks route to Codex.",
       "Bot-side MCP only runs through explicit /mcp commands.",
-      "Try: /status, /repo, /pwd, /exec, /auto, /plan, /model, /language, /verbose, /skill, /new, /sh",
+      "Try: /status, /repo, /pwd, /exec, /auto, /plan, /model, /language, /verbose, /skill, /memory, /new, /sh",
       'GitHub example: /gh commit "feat: init"'
     ],
     helpLines: () => [
@@ -57,6 +56,9 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
       "/repo recent - Show recent projects for this chat",
       "/repo - - Switch back to the previous project",
       "/new - Clear the current project's saved conversation",
+      "/memory list - Show your approved and pending memory",
+      "/memory remember [--global|--project|--skill name] <text> - Stage scoped memory",
+      "/memory approve|reject|forget <id> - Manage a memory record",
       "/exec <task> - Force a one-off Codex run without saving project context",
       "/auto <task> - Force a one-off fully automatic Codex run",
       "/plan <task> - Generate a plan only, without direct file modification intent",
@@ -464,7 +466,7 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
     githubMissingToken:
       "GITHUB_TOKEN is missing, so the GitHub API cannot create a repository.",
     githubRepoNameParseFailed:
-      "Could not parse a repository name. Example: /gh create repo codexclaw-demo",
+      "Could not parse a repository name. Example: /gh create repo codex-smith-demo",
     githubRepoLocalPathExists: ({ path }) =>
       `A local directory already exists for that repository: ${path}`,
     githubRepoCreated: ({ workdir, relativeWorkdir, repo, url, branch }) =>
@@ -522,10 +524,10 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
     buttonRefreshTestStatus: "刷新测试状态",
     emptyResponse: "(空响应)",
     startLines: () => [
-      "CodexClaw 已就绪。",
+      "Codex Smith 已就绪。",
       "普通消息和编码任务会路由到 Codex。",
       "Bot 侧 MCP 仅通过显式 /mcp 命令调用。",
-      "试试: /status, /repo, /pwd, /exec, /auto, /plan, /model, /language, /verbose, /skill, /new, /sh",
+      "试试: /status, /repo, /pwd, /exec, /auto, /plan, /model, /language, /verbose, /skill, /memory, /new, /sh",
       'GitHub 示例: /gh commit "feat: init"'
     ],
     helpLines: () => [
@@ -539,6 +541,9 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
       "/repo recent - 查看最近项目",
       "/repo - - 切回上一个项目",
       "/new - 清空当前项目保存的会话上下文",
+      "/memory list - 查看已批准和待批准的个人记忆",
+      "/memory remember [--global|--project|--skill name] <text> - 暂存作用域记忆",
+      "/memory approve|reject|forget <id> - 管理记忆记录",
       "/exec <task> - 强制执行一次性 Codex 任务，不保存项目上下文",
       "/auto <task> - 强制执行一次性全自动 Codex 任务",
       "/plan <task> - 仅生成计划，不直接修改文件",
@@ -920,7 +925,7 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
       joinLines(["推送成功。", `workdir: ${workdir}`, `branch: ${branch}`]),
     githubMissingToken: "缺少 GITHUB_TOKEN，无法调用 GitHub API 创建仓库。",
     githubRepoNameParseFailed:
-      "无法解析仓库名。示例: /gh create repo codexclaw-demo",
+      "无法解析仓库名。示例: /gh create repo codex-smith-demo",
     githubRepoLocalPathExists: ({ path }) =>
       `同名本地目录已存在，无法创建新仓库: ${path}`,
     githubRepoCreated: ({ workdir, relativeWorkdir, repo, url, branch }) =>

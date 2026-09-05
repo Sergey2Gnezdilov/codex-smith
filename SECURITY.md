@@ -2,7 +2,7 @@
 
 ## Scope
 
-This repository contains CodexClaw, a Telegram-controlled automation runtime for Codex, GitHub workflows, MCP routing, scheduled jobs, and related operational tooling. Security issues in authentication, authorization, sandbox configuration, shell execution, GitHub token handling, state files, dependency configuration, and deployment guidance are in scope.
+This repository contains Codex Smith, a Telegram-controlled automation runtime for Codex, GitHub workflows, MCP routing, scheduled jobs, and related operational tooling. Security issues in authentication, authorization, sandbox configuration, shell execution, GitHub token handling, state files, dependency configuration, and deployment guidance are in scope.
 
 ## Reporting a Vulnerability
 

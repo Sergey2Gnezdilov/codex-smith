@@ -17,10 +17,10 @@ pm2 start ecosystem.config.cjs
 Common PM2 commands:
 
 ```bash
-pm2 status CodexClaw
-pm2 logs CodexClaw
-pm2 restart CodexClaw
-pm2 stop CodexClaw
+pm2 status codex-smith
+pm2 logs codex-smith
+pm2 restart codex-smith
+pm2 stop codex-smith
 pm2 save
 ```
 
@@ -58,9 +58,17 @@ What the health check validates:
 ## Deployment Notes
 
 - Keep exactly one polling process per bot token.
+- Stop the old `CodexClaw` PM2 process before starting `codex-smith`; two polling processes cannot share one bot token.
 - If you also use Codex directly in a terminal, run that work in a separate git worktree. The bot only detects conflicts with other bot-managed chats, not external terminal sessions.
 - Run the bot under a restricted system user.
 - Keep `.env` outside version control.
 - Let each operator configure live-check credentials locally after startup instead of sharing one checked-in identity.
 - Rotate Telegram and GitHub tokens if they are ever exposed.
 - If you reinstall dependencies on macOS, rerun `npm run healthcheck`; the bot now auto-repairs `node-pty` helper permissions on startup.
+
+## Migration From CodexClaw
+
+The default state path is now `.codex-smith-state.json`. When `STATE_FILE` is unset,
+Codex Smith automatically uses `.codex-telegram-claws-state.json` if that legacy file
+already exists and the new file does not. Stop the bot before moving or renaming a
+state file.

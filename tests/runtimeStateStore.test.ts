@@ -11,7 +11,7 @@ test("runtime state store saves and loads MCP and skill state", async () => {
   const store = new RuntimeStateStore({
     config: {
       app: {
-        name: "CodexClaw",
+        name: "Codex Smith",
         stateFile: file
       }
     }
