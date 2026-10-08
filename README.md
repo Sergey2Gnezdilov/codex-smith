@@ -109,6 +109,8 @@ Core workflow:
 - `/model [name|reset]` — inspect or override the model for this chat
 - `/language [en|zh|zh-HK]` — set bot language
 - `/verbose [on|off]` — toggle detailed progress events
+- `/whoami` — show your role, repository scope, Codex sandbox, and allowed commands
+- `/access [reload]` — show or reload the access policy
 
 Codex execution:
 
@@ -134,6 +136,7 @@ Tools and operations:
 
 Codex Smith is a remote-control surface for a coding agent. Treat it like SSH access:
 
+- Use `ACCESS_POLICY_FILE` so only listed users and groups are served
 - Keep `ALLOWED_USER_IDS` narrow and never run without it
 - Put group-only users in `GROUP_ALLOWED_USER_IDS`, not `ALLOWED_USER_IDS`
 - Keep `GROUP_REQUIRE_MENTION=true` and the default per-user group context
@@ -182,7 +185,21 @@ TELEGRAM_API_BASE=https://api.telegram.org
 TELEGRAM_PROXY_URL=
 ```
 
-Multi-user access control:
+Multi-user access control is configured with an access policy file:
+
+```bash
+cp access-policy.example.json access-policy.json
+ACCESS_POLICY_FILE=access-policy.json
+```
+
+The policy assigns roles (`viewer`, `developer`, `operator`, `admin` or your own)
+to Telegram users, lists the groups the bot serves, caps roles per group, limits
+each user to repositories under `WORKSPACE_ROOT`, and sets the Codex sandbox per
+role. Every command, prompt and button checks a capability; anything not granted
+is refused. Use `/whoami` to see your access and `/access reload` after editing the
+file. See [docs/access-control.md](docs/access-control.md).
+
+Without `ACCESS_POLICY_FILE` the bot keeps the legacy environment allowlist:
 
 ```bash
 ALLOWED_USER_IDS=123456789
@@ -195,7 +212,8 @@ MEMORY_ENABLED=true
 MEMORY_REQUIRE_APPROVAL=true
 ```
 
-In the default `per-user` mode, every allowed group member gets an independent Codex
+In legacy mode the bot answers in any group where an allowed user writes. In the
+default `per-user` mode, every allowed group member gets an independent Codex
 thread and bot state. Use `shared` only for a deliberately collaborative group.
 
 Curated memory is stored locally in `.codex-smith-memory.json`. New records are

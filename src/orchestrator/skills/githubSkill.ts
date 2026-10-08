@@ -8,6 +8,11 @@ import type { AppConfig } from "../../config.js";
 import { toErrorMessage } from "../../lib/errors.js";
 import { parseCommandLine } from "../../runner/commandLine.js";
 import { t, type Locale } from "../../bot/i18n.js";
+import { isPathInside } from "../../lib/paths.js";
+import {
+  getCurrentAccessState,
+  resolveConversationKey
+} from "../../bot/accessContext.js";
 
 interface GitStatusResult {
   files: Array<{ path: string }>;
@@ -59,10 +64,13 @@ interface GitHubSkillResult {
 
 type PendingGitHubActionKind = "commit_and_push" | "push" | "create_repo";
 
+export type GitHubRequestKind = "help" | "read" | "test" | "write" | "confirm";
+
 interface PendingGitHubAction {
   kind: PendingGitHubActionKind;
   rawText: string;
   workdir?: string;
+  ownerUserId: string;
 }
 
 function buildAutoCommitMessage(status: GitStatusResult): string {
@@ -170,6 +178,19 @@ export class GitHubSkill {
     return text.trim().startsWith("/gh");
   }
 
+  // Mirrors the dispatch in execute() so callers can check access first.
+  classifyRequest(text: string): GitHubRequestKind {
+    const stripped = text.replace(/^\/gh(@\w+)?\s*/i, "").trim();
+    const normalized = stripped.toLowerCase();
+    if (!stripped || normalized === "help") return "help";
+    if (normalized === "confirm") return "confirm";
+    if (this.classifyWriteAction(normalized)) return "write";
+    if (/创建仓库|create repo|new repo/.test(normalized)) return "write";
+    if (/测试状态|test status|status/.test(normalized)) return "read";
+    if (/运行测试|run test|playwright|e2e/.test(normalized)) return "test";
+    return "help";
+  }
+
   private classifyWriteAction(
     normalized: string
   ): PendingGitHubActionKind | null {
@@ -192,17 +213,20 @@ export class GitHubSkill {
     chatId: string | number,
     action: PendingGitHubAction
   ): void {
-    this.pendingActions.set(String(chatId), action);
+    this.pendingActions.set(resolveConversationKey(chatId), action);
   }
 
+  // A pending write can only be confirmed by the user who requested it.
   private popPendingAction(
     chatId: string | number
   ): PendingGitHubAction | null {
-    const key = String(chatId);
+    const key = resolveConversationKey(chatId);
     const action = this.pendingActions.get(key) || null;
-    if (action) {
-      this.pendingActions.delete(key);
+    const userId = getCurrentAccessState()?.userId || "";
+    if (!action || action.ownerUserId !== userId) {
+      return null;
     }
+    this.pendingActions.delete(key);
     return action;
   }
 
@@ -223,11 +247,7 @@ export class GitHubSkill {
   }
 
   private isInsideWorkspaceRoot(targetPath: string): boolean {
-    const relative = path.relative(this.config.workspace.root, targetPath);
-    return (
-      relative === "" ||
-      (!relative.startsWith("..") && !path.isAbsolute(relative))
-    );
+    return isPathInside(this.config.workspace.root, targetPath);
   }
 
   private resolveSiblingRepoPath(
@@ -289,7 +309,8 @@ export class GitHubSkill {
       this.queuePendingAction(chatId, {
         kind: writeAction,
         rawText: stripped,
-        workdir
+        workdir,
+        ownerUserId: getCurrentAccessState()?.userId || ""
       });
       return {
         text: t(locale, "githubWriteConfirmationRequired", {

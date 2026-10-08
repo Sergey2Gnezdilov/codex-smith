@@ -6,3 +6,4 @@ npm-debug.log*
 .codex-smith-state.json
 .codex-smith-memory.json
 bot.log
+access-policy.json

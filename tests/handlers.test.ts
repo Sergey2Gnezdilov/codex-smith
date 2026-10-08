@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerHandlers } from "../src/bot/handlers.js";
+import { CAPABILITIES, type Capability } from "../src/access/capabilities.js";
+import type { AccessGrant } from "../src/access/policy.js";
+import { GitHubSkill } from "../src/orchestrator/skills/githubSkill.js";
 
 type Handler = (ctx: TestContext) => Promise<void> | void;
 
@@ -16,6 +19,7 @@ interface TestContext {
       chatId: string;
       conversationKey: string;
       isAdmin: boolean;
+      grant?: AccessGrant;
     };
   };
   chat: {
@@ -53,7 +57,37 @@ class FakeBot {
   }
 }
 
-function createContext(text: string, chatId = 1): TestContext {
+function createGrant(overrides: Partial<AccessGrant> = {}): AccessGrant {
+  return {
+    userId: "1",
+    chatId: "1",
+    kind: "private",
+    role: "admin",
+    roleLabel: "admin",
+    capabilities: [...CAPABILITIES],
+    userRepos: ["*"],
+    chatRepos: ["*"],
+    codex: {},
+    denyFeedback: "notice",
+    audit: "off",
+    cooldownSeconds: 0,
+    ...overrides
+  };
+}
+
+function grantWithout(...denied: Capability[]): AccessGrant {
+  return createGrant({
+    role: "viewer",
+    roleLabel: "viewer",
+    capabilities: CAPABILITIES.filter((cap) => !denied.includes(cap))
+  });
+}
+
+function createContext(
+  text: string,
+  chatId = 1,
+  grant: AccessGrant = createGrant()
+): TestContext {
   const replies: ReplyRecord[] = [];
   return {
     state: {
@@ -61,7 +95,8 @@ function createContext(text: string, chatId = 1): TestContext {
         userId: String(chatId),
         chatId: String(chatId),
         conversationKey: `dm:${chatId}`,
-        isAdmin: true
+        isAdmin: grant.capabilities.includes("access.manage"),
+        grant
       }
     },
     chat: {
@@ -100,8 +135,26 @@ function createDependencies(
     devLogs?: () => string;
     devUrl?: () => string | null;
     memoryStore?: Record<string, unknown>;
+    listProjects?: () => Array<{
+      name: string;
+      path: string;
+      relativePath: string;
+    }>;
+    peekPendingPrompt?: () => { workdir: string; fullAuto: boolean } | null;
+    restart?: () => Promise<void>;
   } = {}
 ) {
+  const githubClassifier = new GitHubSkill({
+    config: {
+      github: {
+        token: "",
+        defaultWorkdir: process.cwd(),
+        defaultBranch: "main",
+        e2eCommand: "echo test"
+      },
+      workspace: { root: process.cwd() }
+    }
+  });
   const bot = new FakeBot();
   const ptyManager = {
     getLanguage: () => "en",
@@ -140,6 +193,11 @@ function createDependencies(
         workflowPhase: "none"
       })),
     getRecentProjects: () => [],
+    listProjects: overrides.listProjects || (() => []),
+    peekPendingPrompt: overrides.peekPendingPrompt || (() => null),
+    peekPreviousWorkdir: () => null,
+    setPreferredModel: () => null,
+    closeSession: () => false,
     switchWorkdir:
       overrides.switchWorkdir ||
       (() => ({
@@ -205,6 +263,8 @@ function createDependencies(
     skills: {
       github: {
         execute: overrides.githubExecute || (async () => ({ text: "unused" })),
+        classifyRequest: (text: string) =>
+          githubClassifier.classifyRequest(text),
         getTestStatus: async () => null
       },
       mcp: {
@@ -229,7 +289,8 @@ function createDependencies(
     scheduler: {
       triggerDailySummaryNow: async () => {}
     } as any,
-    memoryStore: overrides.memoryStore as any
+    memoryStore: overrides.memoryStore as any,
+    adminActions: overrides.restart ? { restart: overrides.restart } : {}
   });
 
   return { bot };
@@ -541,4 +602,177 @@ test("text handler shows guidance when plain-text github write actions are block
   assert.equal(ctx.replies.length > 0, true);
   assert.match(ctx.replies[0].text, /explicit/i);
   assert.match(ctx.replies[0].text, /\/gh create repo/i);
+});
+
+function commandHandler(
+  bot: FakeBot,
+  name: string
+): (ctx: TestContext) => Promise<void> | void {
+  const handler = bot.commands.get(name);
+  if (!handler) {
+    throw new Error(`Expected /${name} handler to be registered`);
+  }
+  return handler;
+}
+
+test("commands without the required capability are refused before running", async () => {
+  let restarted = false;
+  const { bot } = createDependencies({
+    restart: async () => {
+      restarted = true;
+    }
+  });
+  const ctx = createContext("/restart", 1, grantWithout("bot.restart"));
+
+  await commandHandler(bot, "restart")(ctx);
+
+  assert.equal(restarted, false);
+  assert.equal(ctx.replies.length, 1);
+  assert.match(ctx.replies[0].text, /bot\.restart/);
+  assert.match(ctx.replies[0].text, /viewer/);
+});
+
+test("silent deny feedback refuses without replying", async () => {
+  let restarted = false;
+  const { bot } = createDependencies({
+    restart: async () => {
+      restarted = true;
+    }
+  });
+  const ctx = createContext("/restart", 1, {
+    ...grantWithout("bot.restart"),
+    denyFeedback: "silent"
+  });
+
+  await commandHandler(bot, "restart")(ctx);
+
+  assert.equal(restarted, false);
+  assert.equal(ctx.replies.length, 0);
+});
+
+test("a context without a resolved grant fails closed", async () => {
+  let restarted = false;
+  const { bot } = createDependencies({
+    restart: async () => {
+      restarted = true;
+    }
+  });
+  const ctx = createContext("/restart");
+  delete ctx.state.codexSmith.grant;
+
+  await commandHandler(bot, "restart")(ctx);
+
+  assert.equal(restarted, false);
+});
+
+test("plain-text test runs routed to GitHub require gh.test", async () => {
+  let executed = false;
+  const { bot } = createDependencies({
+    routeMessage: async (text: string) => ({
+      target: "skill" as const,
+      skill: "github" as const,
+      payload: text
+    }),
+    githubExecute: async () => {
+      executed = true;
+      return { text: "started" };
+    }
+  });
+  const ctx = createContext("run tests please", 1, grantWithout("gh.test"));
+  const textHandler = bot.events.get("text");
+  if (!textHandler) throw new Error("Expected text handler");
+
+  await textHandler(ctx);
+
+  assert.equal(executed, false);
+  assert.match(ctx.replies[0].text, /gh\.test/);
+});
+
+test("prompts are refused when the current repository is outside the user scope", async () => {
+  let prompted = false;
+  const { bot } = createDependencies({
+    sendPrompt: async () => {
+      prompted = true;
+      return { started: true, mode: "sdk" };
+    }
+  });
+  const ctx = createContext(
+    "explain this repo",
+    1,
+    createGrant({ userRepos: ["some-other-project"] })
+  );
+  const textHandler = bot.events.get("text");
+  if (!textHandler) throw new Error("Expected text handler");
+
+  await textHandler(ctx);
+
+  assert.equal(prompted, false);
+  assert.match(ctx.replies[0].text, /outside your access scope/);
+});
+
+test("repo list only shows repositories inside the user scope", async () => {
+  const root = process.cwd();
+  const { bot } = createDependencies({
+    listProjects: () => [
+      { name: "alpha", path: `${root}/alpha`, relativePath: "alpha" },
+      { name: "beta", path: `${root}/beta`, relativePath: "beta" }
+    ]
+  });
+  const ctx = createContext("/repo", 1, createGrant({ userRepos: ["alpha"] }));
+
+  await commandHandler(bot, "repo")(ctx);
+
+  const text = ctx.replies.map((reply) => reply.text).join("\n");
+  assert.match(text, /alpha/);
+  assert.doesNotMatch(text, /beta/);
+});
+
+test("continue requires codex.auto when the blocked request was /auto", async () => {
+  let continued = false;
+  const { bot } = createDependencies({
+    peekPendingPrompt: () => ({ workdir: process.cwd(), fullAuto: true }),
+    continuePendingPrompt: async () => {
+      continued = true;
+      return { started: true, mode: "sdk" };
+    }
+  });
+  const ctx = createContext("/continue", 1, grantWithout("codex.auto"));
+
+  await commandHandler(bot, "continue")(ctx);
+
+  assert.equal(continued, false);
+  assert.match(ctx.replies[0].text, /codex\.auto/);
+});
+
+test("model command rejects names with unexpected characters", async () => {
+  const { bot } = createDependencies();
+  const ctx = createContext("/model gpt-5 --oss");
+
+  await commandHandler(bot, "model")(ctx);
+
+  assert.match(ctx.replies[0].text, /Model names/);
+});
+
+test("whoami lists the role, scopes and granted commands", async () => {
+  const { bot } = createDependencies();
+  const ctx = createContext(
+    "/whoami",
+    1,
+    createGrant({
+      role: "developer",
+      roleLabel: "developer (capped by viewer)",
+      capabilities: ["bot.status", "codex.prompt"],
+      userRepos: ["alpha"],
+      codex: { sandbox: "read-only" }
+    })
+  );
+
+  await commandHandler(bot, "whoami")(ctx);
+
+  const text = ctx.replies.map((reply) => reply.text).join("\n");
+  assert.match(text, /capped by viewer/);
+  assert.match(text, /user\\=alpha/);
+  assert.match(text, /sandbox\\=read\\-only/);
+  assert.match(text, /codex\\\.prompt/);
+  assert.doesNotMatch(text, /gh\\\.write/);
 });

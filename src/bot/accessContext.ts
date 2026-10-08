@@ -1,10 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { AccessGrant } from "../access/policy.js";
 
 export interface CodexSmithAccessState {
   userId: string;
   chatId: string;
   conversationKey: string;
   isAdmin: boolean;
+  grant?: AccessGrant;
 }
 
 const accessStorage = new AsyncLocalStorage<CodexSmithAccessState>();

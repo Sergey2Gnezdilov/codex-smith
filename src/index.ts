@@ -18,6 +18,8 @@ import { toErrorMessage } from "./lib/errors.js";
 import { createTelegramApiAgent } from "./lib/telegramApi.js";
 import { MemoryStore } from "./memory/memoryStore.js";
 import { getCurrentAccessState } from "./bot/accessContext.js";
+import { createAccessPolicyStore } from "./access/policy.js";
+import { AccessGuard } from "./access/guard.js";
 
 const config = loadConfig();
 const telegramApiAgent = createTelegramApiAgent(config.telegram.proxyUrl);
@@ -30,6 +32,7 @@ const bot = new Telegraf(config.telegram.botToken, {
       : {})
   }
 });
+const accessPolicy = createAccessPolicyStore(config);
 const stateStore = new RuntimeStateStore({ config });
 const memoryStore = new MemoryStore({ config });
 let mcpClient: McpClient | null = null;
@@ -68,7 +71,13 @@ async function restartBotProcess(): Promise<void> {
   await shutdown("RESTART");
 }
 
-bot.use(createAuthMiddleware(config));
+console.log(`[access] policy source: ${accessPolicy.get().source}`);
+if (!config.access.policyFile) {
+  console.warn(
+    "[access] ACCESS_POLICY_FILE is not set; using the legacy environment allowlist, which accepts any group an allowed user writes in."
+  );
+}
+bot.use(createAuthMiddleware(accessPolicy));
 
 const runtimeState = await stateStore.load();
 await memoryStore.load();
@@ -136,6 +145,8 @@ registerHandlers({
   skillRegistry,
   scheduler,
   memoryStore,
+  accessGuard: new AccessGuard(),
+  accessPolicy,
   adminActions: {
     restart: restartBotProcess
   }

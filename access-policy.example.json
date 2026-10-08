@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "_comment": "Copy to access-policy.json, set ACCESS_POLICY_FILE=access-policy.json and run /access reload after edits. Keys starting with _ are ignored. See docs/access-control.md.",
+  "settings": {
+    "deny": {
+      "privateChats": "notice",
+      "groups": "silent",
+      "cooldownSeconds": 60
+    },
+    "audit": "denied",
+    "unknownGroups": "deny",
+    "groupDefaults": {
+      "conversation": "per-user",
+      "requireMention": true
+    }
+  },
+  "roles": {
+    "reviewer": {
+      "inherits": "developer",
+      "description": "Reads code and runs tests, never writes to GitHub",
+      "capabilities": ["gh.test", "!gh.write"],
+      "codex": { "sandbox": "read-only" }
+    }
+  },
+  "users": {
+    "123456789": { "name": "Owner", "role": "admin" },
+    "234567890": {
+      "name": "Backend developer",
+      "role": "developer",
+      "repos": ["api", "libs/shared"]
+    },
+    "345678901": {
+      "name": "QA",
+      "role": "reviewer",
+      "repos": ["web"],
+      "privateChat": false
+    }
+  },
+  "groups": {
+    "-1001234567890": {
+      "name": "Team chat",
+      "maxRole": "developer",
+      "defaultRole": "viewer",
+      "repos": ["api", "web"],
+      "conversation": "per-user",
+      "requireMention": true
+    }
+  }
+}

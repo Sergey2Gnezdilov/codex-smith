@@ -24,6 +24,13 @@ import type { DevServerManager } from "../runner/devServerManager.js";
 import type { SkillRegistry } from "../orchestrator/skillRegistry.js";
 import type { MemoryScope, MemoryStore } from "../memory/memoryStore.js";
 import type { CodexSmithAccessState } from "./accessContext.js";
+import { AccessGuard } from "../access/guard.js";
+import {
+  CAPABILITY_COMMANDS,
+  type Capability
+} from "../access/capabilities.js";
+import type { AccessPolicy, AccessPolicyStore } from "../access/policy.js";
+import { isPathInside } from "../lib/paths.js";
 
 interface SkillResultPayload {
   text?: string;
@@ -41,9 +48,59 @@ interface RegisterHandlersOptions {
   skillRegistry: SkillRegistry;
   scheduler: Scheduler;
   memoryStore?: MemoryStore;
+  accessGuard?: AccessGuard;
+  accessPolicy?: AccessPolicyStore;
   adminActions?: {
     restart?: () => Promise<void>;
   };
+}
+
+const GITHUB_REQUEST_CAPABILITIES: Record<string, Capability> = {
+  help: "gh.read",
+  read: "gh.read",
+  test: "gh.test",
+  write: "gh.write",
+  confirm: "gh.write"
+};
+
+const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/;
+
+function mcpCapability(text: string): Capability {
+  const subcommand = text
+    .replace(/^\/mcp(@\w+)?\s*/i, "")
+    .trim()
+    .split(/\s+/)[0]
+    ?.toLowerCase();
+  if (subcommand === "call") return "mcp.call";
+  if (/^(enable|disable|reconnect)$/.test(subcommand || "")) {
+    return "mcp.manage";
+  }
+  return "mcp.read";
+}
+
+function formatRepoScope(entries: string[]): string {
+  return entries.includes("*") ? "*" : entries.join(", ");
+}
+
+function formatAccessSummary(policy: AccessPolicy): string[] {
+  const roles = [...policy.roles.values()].map(
+    (role) => `- ${role.name}: ${role.description || "(no description)"}`
+  );
+  const groups = [...policy.groups.entries()].map(
+    ([id, group]) =>
+      `- ${id}: maxRole=${group.maxRole || "-"}, defaultRole=${group.defaultRole || "-"}, conversation=${group.conversation}, repos=${formatRepoScope(group.repos)}`
+  );
+  return [
+    `Access policy: ${policy.source}`,
+    `Users: ${policy.users.size}`,
+    `Unlisted groups: ${policy.settings.unknownGroups}`,
+    `Denied feedback: private=${policy.settings.deny.privateChats}, groups=${policy.settings.deny.groups}`,
+    `Audit: ${policy.settings.audit}`,
+    "Roles:",
+    ...roles,
+    "Groups:",
+    ...(groups.length ? groups : ["- (none)"])
+  ];
 }
 
 function accessStateOf(ctx: any): CodexSmithAccessState {
@@ -165,16 +222,6 @@ function suggestProjectName(
   return suggestClosestWord(input, candidates, threshold);
 }
 
-function isInsideWorkspaceRoot(root: string, candidate: string): boolean {
-  const target = path.resolve(candidate);
-  const relative = path.relative(root, target);
-
-  return (
-    relative === "" ||
-    (!relative.startsWith("..") && !path.isAbsolute(relative))
-  );
-}
-
 function extractCloneTarget(
   result: Pick<
     ShellExecutionResult,
@@ -213,7 +260,7 @@ function buildShellSuccessFollowUp(
   }
 
   const relativePath = path.relative(workspaceRoot, cloneTarget) || ".";
-  const repoCommand = isInsideWorkspaceRoot(workspaceRoot, cloneTarget)
+  const repoCommand = isPathInside(workspaceRoot, cloneTarget)
     ? `/repo ${relativePath}`
     : "";
 
@@ -234,10 +281,21 @@ export function registerHandlers({
   skillRegistry,
   scheduler,
   memoryStore,
+  accessGuard,
+  accessPolicy,
   adminActions
 }: RegisterHandlersOptions): void {
   const localeOf = (chatId: string | number): Locale =>
     ptyManager.getLanguage(chatId);
+  const guard = accessGuard || new AccessGuard();
+  const allow = (ctx: any, capability: Capability): Promise<boolean> =>
+    guard.require(ctx, capability, localeOf(ctx.chat.id));
+  const allowCurrentWorkdir = (ctx: any): Promise<boolean> =>
+    guard.requireWorkdir(
+      ctx,
+      ptyManager.getStatus(ctx.chat.id),
+      localeOf(ctx.chat.id)
+    );
   const handlePromptResult = async (
     ctx: any,
     locale: Locale,
@@ -278,6 +336,11 @@ export function registerHandlers({
       return;
     }
 
+    if (result.reason === "profile_mismatch") {
+      await sendChunkedMarkdown(ctx, t(locale, "codexProfileMismatch"));
+      return;
+    }
+
     await sendChunkedMarkdown(
       ctx,
       t(locale, "taskBusy", { mode: result.activeMode || "unknown" })
@@ -285,6 +348,7 @@ export function registerHandlers({
   };
 
   bot.start(async (ctx: any) => {
+    if (!(await allow(ctx, "bot.status"))) return;
     await sendChunkedMarkdown(
       ctx,
       t(localeOf(ctx.chat.id), "startLines").join("\n")
@@ -292,6 +356,7 @@ export function registerHandlers({
   });
 
   bot.command("help", async (ctx: any) => {
+    if (!(await allow(ctx, "bot.status"))) return;
     await sendChunkedMarkdown(
       ctx,
       t(localeOf(ctx.chat.id), "helpLines").join("\n")
@@ -299,6 +364,7 @@ export function registerHandlers({
   });
 
   bot.command("status", async (ctx: any) => {
+    if (!(await allow(ctx, "bot.status"))) return;
     const locale = localeOf(ctx.chat.id);
     const status = ptyManager.getStatus(ctx.chat.id);
     const skillStates = skillRegistry.list(ctx.chat.id);
@@ -338,6 +404,7 @@ export function registerHandlers({
   });
 
   bot.command("pwd", async (ctx: any) => {
+    if (!(await allow(ctx, "bot.status"))) return;
     const status = ptyManager.getStatus(ctx.chat.id);
     await sendChunkedMarkdown(
       ctx,
@@ -355,11 +422,15 @@ export function registerHandlers({
   bot.command("repo", async (ctx: any) => {
     const locale = localeOf(ctx.chat.id);
     const payload = extractCommandPayload(ctx.message.text, "repo");
+    const listing = !payload || /^recent$/i.test(payload);
+    if (!(await allow(ctx, listing ? "repo.list" : "repo.switch"))) return;
     const status = ptyManager.getStatus(ctx.chat.id);
+    const visible = (project: { path: string }): boolean =>
+      guard.isWorkdirAllowed(ctx, status.workspaceRoot, project.path);
 
     if (!payload) {
-      const projects = ptyManager.listProjects();
-      const recent = ptyManager.getRecentProjects(ctx.chat.id);
+      const projects = ptyManager.listProjects().filter(visible);
+      const recent = ptyManager.getRecentProjects(ctx.chat.id).filter(visible);
       const lines = formatProjectLines(projects, status.workdir);
       const recentLines = recent.map((project) => `- ${project.relativePath}`);
 
@@ -377,6 +448,7 @@ export function registerHandlers({
     if (/^recent$/i.test(payload)) {
       const recent = ptyManager
         .getRecentProjects(ctx.chat.id)
+        .filter(visible)
         .map((project) => `- ${project.relativePath}`);
       await sendChunkedMarkdown(
         ctx,
@@ -389,8 +461,17 @@ export function registerHandlers({
 
     try {
       let target = payload;
-      if (payload !== "-") {
-        const projects = ptyManager.listProjects();
+      if (payload === "-") {
+        const previous = ptyManager.peekPreviousWorkdir(ctx.chat.id);
+        if (previous && !visible({ path: previous })) {
+          throw new Error(
+            t(locale, "accessRepoDenied", {
+              value: path.relative(status.workspaceRoot, previous) || "."
+            })
+          );
+        }
+      } else {
+        const projects = ptyManager.listProjects().filter(visible);
         const exact = projects.find(
           (project) =>
             project.relativePath === payload || project.name === payload
@@ -450,7 +531,9 @@ export function registerHandlers({
   bot.command("skill", async (ctx: any) => {
     const locale = localeOf(ctx.chat.id);
     const payload = extractCommandPayload(ctx.message.text, "skill");
-    if (!payload || /^(list|status)$/i.test(payload)) {
+    const listing = !payload || /^(list|status)$/i.test(payload);
+    if (!(await allow(ctx, listing ? "bot.status" : "skills.manage"))) return;
+    if (listing) {
       await sendChunkedMarkdown(
         ctx,
         t(locale, "skillList", {
@@ -501,6 +584,7 @@ export function registerHandlers({
   });
 
   bot.command("memory", async (ctx: any) => {
+    if (!(await allow(ctx, "memory.use"))) return;
     if (!memoryStore?.isEnabled()) {
       await sendChunkedMarkdown(ctx, "Memory is disabled.");
       return;
@@ -595,6 +679,7 @@ export function registerHandlers({
   });
 
   bot.command("new", async (ctx: any) => {
+    if (!(await allow(ctx, "codex.prompt"))) return;
     const result = ptyManager.resetCurrentProjectConversation(ctx.chat.id);
     await sendChunkedMarkdown(
       ctx,
@@ -603,6 +688,7 @@ export function registerHandlers({
   });
 
   bot.command("restart", async (ctx: any) => {
+    if (!(await allow(ctx, "bot.restart"))) return;
     const locale = localeOf(ctx.chat.id);
     if (!adminActions?.restart) {
       await sendChunkedMarkdown(ctx, t(locale, "restartUnavailable"));
@@ -614,12 +700,14 @@ export function registerHandlers({
   });
 
   bot.command("exec", async (ctx: any) => {
+    if (!(await allow(ctx, "codex.exec"))) return;
     const locale = localeOf(ctx.chat.id);
     const task = extractCommandPayload(ctx.message.text, "exec");
     if (!task) {
       await sendChunkedMarkdown(ctx, t(locale, "usageExec"));
       return;
     }
+    if (!(await allowCurrentWorkdir(ctx))) return;
 
     const result = await ptyManager.sendPrompt(ctx, task, {
       forceExec: true,
@@ -630,6 +718,7 @@ export function registerHandlers({
   });
 
   bot.command("sh", async (ctx: any) => {
+    if (!(await allow(ctx, "shell.run"))) return;
     const locale = localeOf(ctx.chat.id);
     const command = extractCommandPayload(ctx.message.text, "sh");
     if (!command) {
@@ -651,6 +740,8 @@ export function registerHandlers({
       return;
     }
 
+    if (validation.dangerous && !(await allow(ctx, "shell.confirm"))) return;
+
     if (validation.requiresConfirmation) {
       await sendChunkedMarkdown(
         ctx,
@@ -661,6 +752,8 @@ export function registerHandlers({
       );
       return;
     }
+
+    if (!(await allowCurrentWorkdir(ctx))) return;
 
     await sendChunkedMarkdown(
       ctx,
@@ -698,6 +791,11 @@ export function registerHandlers({
     const locale = localeOf(ctx.chat.id);
     const payload = extractCommandPayload(ctx.message.text, "dev");
     const subcommand = (payload || "status").trim().toLowerCase();
+    const capability: Capability = /^(start|stop)$/.test(subcommand)
+      ? "dev.run"
+      : "dev.read";
+    if (!(await allow(ctx, capability))) return;
+    if (!(await allowCurrentWorkdir(ctx))) return;
     const runtimeStatus = ptyManager.getStatus(ctx.chat.id);
     const workdir = runtimeStatus.workdir;
     const relativeWorkdir = runtimeStatus.relativeWorkdir;
@@ -808,12 +906,14 @@ export function registerHandlers({
   });
 
   bot.command("auto", async (ctx: any) => {
+    if (!(await allow(ctx, "codex.auto"))) return;
     const locale = localeOf(ctx.chat.id);
     const task = extractCommandPayload(ctx.message.text, "auto");
     if (!task) {
       await sendChunkedMarkdown(ctx, t(locale, "usageAuto"));
       return;
     }
+    if (!(await allowCurrentWorkdir(ctx))) return;
 
     const result = await ptyManager.sendPrompt(ctx, task, {
       forceExec: true,
@@ -825,12 +925,14 @@ export function registerHandlers({
   });
 
   bot.command("plan", async (ctx: any) => {
+    if (!(await allow(ctx, "codex.plan"))) return;
     const locale = localeOf(ctx.chat.id);
     const task = extractCommandPayload(ctx.message.text, "plan");
     if (!task) {
       await sendChunkedMarkdown(ctx, t(locale, "usagePlan"));
       return;
     }
+    if (!(await allowCurrentWorkdir(ctx))) return;
 
     const result = await ptyManager.sendPrompt(ctx, buildPlanPrompt(task), {
       forceExec: true,
@@ -841,6 +943,10 @@ export function registerHandlers({
   });
 
   bot.command("continue", async (ctx: any) => {
+    if (!(await allow(ctx, "codex.prompt"))) return;
+    const pending = ptyManager.peekPendingPrompt(ctx.chat.id);
+    if (pending?.fullAuto && !(await allow(ctx, "codex.auto"))) return;
+    if (pending && !(await allowCurrentWorkdir(ctx))) return;
     const locale = localeOf(ctx.chat.id);
     const result = await ptyManager.continuePendingPrompt(ctx);
     await handlePromptResult(ctx, locale, result, {
@@ -851,6 +957,7 @@ export function registerHandlers({
   bot.command("model", async (ctx: any) => {
     const locale = localeOf(ctx.chat.id);
     const value = extractCommandPayload(ctx.message.text, "model");
+    if (!(await allow(ctx, value ? "codex.model" : "bot.status"))) return;
     if (!value) {
       const status = ptyManager.getStatus(ctx.chat.id);
       await sendChunkedMarkdown(
@@ -867,6 +974,11 @@ export function registerHandlers({
       return;
     }
 
+    if (!MODEL_NAME_PATTERN.test(value)) {
+      await sendChunkedMarkdown(ctx, t(locale, "modelInvalid"));
+      return;
+    }
+
     ptyManager.setPreferredModel(ctx.chat.id, value);
     const closed = ptyManager.closeSession(ctx.chat.id);
     await sendChunkedMarkdown(ctx, t(locale, "modelSet", { value, closed }));
@@ -875,6 +987,7 @@ export function registerHandlers({
   bot.command("verbose", async (ctx: any) => {
     const locale = localeOf(ctx.chat.id);
     const value = extractCommandPayload(ctx.message.text, "verbose");
+    if (!(await allow(ctx, value ? "bot.preferences" : "bot.status"))) return;
     if (!value) {
       await sendChunkedMarkdown(
         ctx,
@@ -909,6 +1022,7 @@ export function registerHandlers({
   bot.command("language", async (ctx: any) => {
     const currentLocale = localeOf(ctx.chat.id);
     const value = extractCommandPayload(ctx.message.text, "language");
+    if (!(await allow(ctx, value ? "bot.preferences" : "bot.status"))) return;
     if (!value) {
       await sendChunkedMarkdown(
         ctx,
@@ -935,6 +1049,7 @@ export function registerHandlers({
   });
 
   bot.command("interrupt", async (ctx: any) => {
+    if (!(await allow(ctx, "codex.prompt"))) return;
     const ok = ptyManager.interrupt(ctx.chat.id);
     await sendChunkedMarkdown(
       ctx,
@@ -943,6 +1058,7 @@ export function registerHandlers({
   });
 
   bot.command("stop", async (ctx: any) => {
+    if (!(await allow(ctx, "codex.prompt"))) return;
     const ok = ptyManager.closeSession(ctx.chat.id);
     await sendChunkedMarkdown(
       ctx,
@@ -951,6 +1067,7 @@ export function registerHandlers({
   });
 
   bot.command("cron_now", async (ctx: any) => {
+    if (!(await allow(ctx, "bot.cron"))) return;
     const locale = localeOf(ctx.chat.id);
     try {
       await scheduler.triggerDailySummaryNow(ctx.from.id);
@@ -972,6 +1089,14 @@ export function registerHandlers({
 
     try {
       const text = extractCommandPayload(ctx.message.text, "gh") || "help";
+      const kind = skills.github.classifyRequest(`/gh ${text}`);
+      if (!(await allow(ctx, GITHUB_REQUEST_CAPABILITIES[kind]))) return;
+      if (
+        (kind === "test" || kind === "write") &&
+        !(await allowCurrentWorkdir(ctx))
+      ) {
+        return;
+      }
       const result = await skills.github.execute({
         text: `/gh ${text}`,
         chatId: ctx.chat.id,
@@ -996,6 +1121,7 @@ export function registerHandlers({
 
     try {
       const text = ctx.message.text.trim();
+      if (!(await allow(ctx, mcpCapability(text)))) return;
       const result = await skills.mcp.execute({ text, ctx, locale });
       await applySkillResult(ctx, result, locale, ptyManager);
     } catch (error) {
@@ -1006,10 +1132,77 @@ export function registerHandlers({
     }
   });
 
+  bot.command("whoami", async (ctx: any) => {
+    if (!(await allow(ctx, "bot.status"))) return;
+    const locale = localeOf(ctx.chat.id);
+    const access = accessStateOf(ctx);
+    const grant = access.grant;
+    if (!grant) return;
+    await sendChunkedMarkdown(
+      ctx,
+      t(locale, "whoamiLines", {
+        userId: grant.userId,
+        chatId: grant.chatId,
+        kind: grant.kind,
+        role: grant.roleLabel,
+        userRepos: formatRepoScope(grant.userRepos),
+        chatRepos: formatRepoScope(grant.chatRepos),
+        sandbox: grant.codex.sandbox || "default",
+        approval: grant.codex.approval || "default",
+        network:
+          grant.codex.network === undefined
+            ? "default"
+            : String(grant.codex.network),
+        commandLines: grant.capabilities.map(
+          (capability) => `- ${capability}: ${CAPABILITY_COMMANDS[capability]}`
+        )
+      }).join("\n")
+    );
+  });
+
+  bot.command("access", async (ctx: any) => {
+    if (!(await allow(ctx, "access.manage"))) return;
+    const locale = localeOf(ctx.chat.id);
+    const payload = extractCommandPayload(ctx.message.text, "access");
+    if (!accessPolicy) {
+      await sendChunkedMarkdown(ctx, t(locale, "accessUnavailable"));
+      return;
+    }
+
+    if (/^reload$/i.test(payload)) {
+      try {
+        const policy = accessPolicy.reload();
+        await sendChunkedMarkdown(
+          ctx,
+          [t(locale, "accessReloaded"), ...formatAccessSummary(policy)].join(
+            "\n"
+          )
+        );
+      } catch (error) {
+        await sendChunkedMarkdown(
+          ctx,
+          t(locale, "accessReloadFailed", { error: toErrorMessage(error) })
+        );
+      }
+      return;
+    }
+
+    if (payload) {
+      await sendChunkedMarkdown(ctx, t(locale, "usageAccess"));
+      return;
+    }
+
+    await sendChunkedMarkdown(
+      ctx,
+      formatAccessSummary(accessPolicy.get()).join("\n")
+    );
+  });
+
   bot.on("callback_query", async (ctx: any) => {
     const locale = localeOf(ctx.chat.id);
     const data = ctx.callbackQuery?.data || "";
     if (!data.startsWith("gh:test_status:")) return;
+    if (!(await allow(ctx, "gh.read"))) return;
 
     const jobId = data.replace("gh:test_status:", "");
     const result = await skills.github.getTestStatus(jobId, locale);
@@ -1047,10 +1240,22 @@ export function registerHandlers({
         chatId: ctx.chat.id
       });
       if (route.target === "pty") {
+        if (!(await allow(ctx, "codex.prompt"))) return;
+        if (!(await allowCurrentWorkdir(ctx))) return;
         const result = await ptyManager.sendPrompt(ctx, route.prompt);
         await handlePromptResult(ctx, locale, result);
         return;
       }
+
+      const kind =
+        route.skill === "github"
+          ? skills.github.classifyRequest(route.payload)
+          : null;
+      const capability: Capability = kind
+        ? GITHUB_REQUEST_CAPABILITIES[kind]
+        : "mcp.read";
+      if (!(await allow(ctx, capability))) return;
+      if (kind === "test" && !(await allowCurrentWorkdir(ctx))) return;
 
       const skill = skills[route.skill];
       if (!skill) {

@@ -78,7 +78,9 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
       "/stop - Terminate the active Codex run",
       "/cron_now - Trigger the daily summary immediately",
       "/gh ... - GitHub skill",
-      "/mcp ... - MCP control and explicit tool calls"
+      "/mcp ... - MCP control and explicit tool calls",
+      "/whoami - Show your role, repositories and allowed commands",
+      "/access [reload] - Show or reload the access policy"
     ],
     statusLines: ({
       status,
@@ -332,6 +334,42 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
     testJobNotFound: ({ jobId }) => `Test job not found: ${jobId}`,
     useRestartCommand:
       "Use /restart instead of sending that as a plain message.",
+    accessDenied: ({ capability, role }) =>
+      `Not allowed: ${capability} is not granted to role "${role}". Use /whoami to see your access.`,
+    accessWorkdirDenied: ({ relativeWorkdir }) =>
+      `Repository "${relativeWorkdir}" is outside your access scope. Use /repo to pick an allowed one.`,
+    accessRepoDenied: ({ value }) =>
+      `Repository "${value}" is outside your access scope.`,
+    accessUnavailable: "The access policy store is not available.",
+    accessReloaded: "Access policy reloaded.",
+    accessReloadFailed: ({ error }) =>
+      `Access policy reload failed; the previous policy stays active.\n${error}`,
+    usageAccess: "Usage: /access [reload]",
+    whoamiLines: ({
+      userId,
+      chatId,
+      kind,
+      role,
+      userRepos,
+      chatRepos,
+      sandbox,
+      approval,
+      network,
+      commandLines
+    }) => [
+      "Access:",
+      `- user: ${userId}`,
+      `- chat: ${chatId} (${kind})`,
+      `- role: ${role}`,
+      `- repositories: user=${userRepos}, chat=${chatRepos}`,
+      `- codex: sandbox=${sandbox}, approval=${approval}, network=${network}`,
+      "Allowed:",
+      ...(commandLines.length ? commandLines : ["- (nothing)"])
+    ],
+    modelInvalid:
+      "Model names may only contain letters, digits and . _ : / - characters.",
+    codexProfileMismatch:
+      "A Codex session with a different access profile is already open in this conversation. Use /stop first, or switch the group to per-user conversations.",
     slashSpaceError: ({ fixed }) =>
       joinLines([
         "Invalid command format: do not put spaces after `/`.",
@@ -563,7 +601,9 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
       "/stop - 终止当前 Codex 任务",
       "/cron_now - 立即触发日报",
       "/gh ... - GitHub skill",
-      "/mcp ... - MCP 控制与显式工具调用"
+      "/mcp ... - MCP 控制与显式工具调用",
+      "/whoami - 查看你的角色、可用仓库和命令",
+      "/access [reload] - 查看或重新加载访问策略"
     ],
     statusLines: ({
       status,
@@ -978,7 +1018,8 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
   "zh-HK": {}
 };
 
-type ArrayMessageKey = "startLines" | "helpLines" | "statusLines" | "pwdLines";
+type ArrayMessageKey =
+  "startLines" | "helpLines" | "statusLines" | "pwdLines" | "whoamiLines";
 
 export function normalizeLanguage(value = ""): Locale | "" {
   const raw = String(value || "").trim();
