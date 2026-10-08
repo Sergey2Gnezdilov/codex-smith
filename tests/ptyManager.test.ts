@@ -19,6 +19,9 @@ interface ManagerOverrides {
   backend?: PtyManagerConstructorOptions["config"]["runner"]["backend"];
   codexClientFactory?: CodexClientFactory;
   initialContextProvider?: PtyManagerConstructorOptions["initialContextProvider"];
+  sdkThreadOptions?: Partial<
+    PtyManagerConstructorOptions["config"]["runner"]["sdkThreadOptions"]
+  >;
 }
 
 interface FakeSequence {
@@ -61,7 +64,8 @@ function createManager(overrides: ManagerOverrides = {}) {
         sdkConfig: {},
         sdkThreadOptions: {
           skipGitRepoCheck: true,
-          additionalDirectories: []
+          additionalDirectories: [],
+          ...overrides.sdkThreadOptions
         }
       },
       workspace: {
@@ -845,4 +849,78 @@ test("pty manager shows exec fallback notices when verbose output is on", async 
 
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0].text, /Interactive terminal is unavailable/);
+});
+
+test("pty manager adds role sandbox and approval flags to Codex CLI arguments", () => {
+  const manager = createManager();
+
+  assert.deepEqual(
+    manager.getExecArgs(456, "inspect", {
+      codexProfile: { sandbox: "read-only", approval: "untrusted" }
+    }),
+    [
+      "--ask-for-approval",
+      "untrusted",
+      "--sandbox",
+      "read-only",
+      "exec",
+      "inspect"
+    ]
+  );
+  assert.deepEqual(
+    manager.getExecArgs(456, "inspect", {
+      fullAuto: true,
+      codexProfile: { sandbox: "read-only" }
+    }),
+    ["--ask-for-approval", "never", "--sandbox", "read-only", "exec", "inspect"]
+  );
+  assert.deepEqual(
+    manager.getInteractiveArgs(456, {
+      codexProfile: { sandbox: "read-only" }
+    }),
+    ["--sandbox", "read-only"]
+  );
+  assert.deepEqual(manager.getInteractiveArgs(456), []);
+});
+
+test("sdk turns apply the role profile without dropping configured defaults", async () => {
+  const calls: FakeCall[] = [];
+  const completed = () => ({
+    initialId: null,
+    events: async function* () {
+      yield {
+        type: "turn.completed",
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 }
+      };
+    }
+  });
+  const manager = createManager({
+    backend: "sdk",
+    sdkThreadOptions: {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request"
+    },
+    codexClientFactory: createFakeCodexClient([completed(), completed()], calls)
+  });
+
+  await manager.sendPrompt({ chat: { id: 1 } }, "default profile");
+  await waitFor(() => !manager.getStatus(1).active);
+  await manager.sendPrompt(
+    {
+      chat: { id: 2 },
+      state: {
+        codexSmith: {
+          grant: { codex: { sandbox: "read-only", network: false } }
+        }
+      }
+    },
+    "viewer profile"
+  );
+  await waitFor(() => !manager.getStatus(2).active);
+
+  assert.equal(calls[0]?.options.sandboxMode, "workspace-write");
+  assert.equal(calls[0]?.options.approvalPolicy, "on-request");
+  assert.equal(calls[1]?.options.sandboxMode, "read-only");
+  assert.equal(calls[1]?.options.approvalPolicy, "on-request");
+  assert.equal(calls[1]?.options.networkAccessEnabled, false);
 });

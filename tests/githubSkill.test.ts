@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GitHubSkill } from "../src/orchestrator/skills/githubSkill.js";
+import { runWithAccessState } from "../src/bot/accessContext.js";
 
 function createGitHubConfig(workspaceRoot = process.cwd()) {
   return {
@@ -265,4 +266,58 @@ test("github skill requires confirmation before explicit push and executes it on
   });
   assert.match(confirmed.text, /Push succeeded/i);
   assert.deepEqual(calls, ["push"]);
+});
+
+test("github skill classifies requests for access checks", () => {
+  const skill = new GitHubSkill({ config: createGitHubConfig() });
+
+  assert.equal(skill.classifyRequest("/gh"), "help");
+  assert.equal(skill.classifyRequest("/gh confirm"), "confirm");
+  assert.equal(skill.classifyRequest("/gh test status"), "read");
+  assert.equal(skill.classifyRequest("/gh run tests"), "test");
+  assert.equal(skill.classifyRequest("run playwright please"), "test");
+  assert.equal(skill.classifyRequest("/gh push"), "write");
+  assert.equal(skill.classifyRequest('/gh commit "x"'), "write");
+  assert.equal(skill.classifyRequest("/gh create repo demo"), "write");
+});
+
+test("github pending writes can only be confirmed by the requesting user", async () => {
+  const skill = new GitHubSkill({ config: createGitHubConfig() });
+  let pushes = 0;
+  skill.getGit = () => ({
+    status: async () => ({ files: [] }),
+    add: async () => {},
+    commit: async () => {},
+    branch: async () => ({ current: "main" }),
+    push: async () => {
+      pushes += 1;
+    },
+    getRemotes: async () => [],
+    addRemote: async () => {},
+    remote: async () => {}
+  });
+  const asUser = <T>(userId: string, run: () => Promise<T>): Promise<T> =>
+    runWithAccessState(
+      {
+        userId,
+        chatId: "-1001",
+        conversationKey: "group:-1001",
+        isAdmin: true
+      },
+      run
+    );
+
+  await asUser("1", () =>
+    skill.execute({ text: "/gh push", chatId: -1001, workdir: process.cwd() })
+  );
+  const foreign = await asUser("2", () =>
+    skill.execute({ text: "/gh confirm", chatId: -1001 })
+  );
+  assert.equal(pushes, 0);
+  assert.match(foreign.text, /no pending/i);
+
+  await asUser("1", () =>
+    skill.execute({ text: "/gh confirm", chatId: -1001 })
+  );
+  assert.equal(pushes, 1);
 });

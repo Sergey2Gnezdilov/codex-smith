@@ -20,6 +20,8 @@ import {
   resolveConversationKey
 } from "../bot/accessContext.js";
 import { toErrorMessage } from "../lib/errors.js";
+import { isPathInside } from "../lib/paths.js";
+import type { RoleCodexSettings } from "../access/policy.js";
 import { repairNodePtySpawnHelperPermissions } from "./ptyPreflight.js";
 type SessionMode = "pty" | "exec" | "sdk";
 type ExitSignal = number | NodeJS.Signals | null;
@@ -115,6 +117,7 @@ interface RunnerSession {
   interrupt: (() => void) | null;
   close: (() => void) | null;
   workflowPhase: WorkflowPhase | null;
+  codexProfileKey?: string;
 }
 
 interface SessionOptions {
@@ -125,6 +128,7 @@ interface SessionOptions {
   fullAuto?: boolean;
   extraArgs?: string[];
   trackConversation?: boolean;
+  codexProfile?: RoleCodexSettings;
 }
 
 interface SendPromptOptions {
@@ -138,6 +142,13 @@ interface SendPromptOptions {
 interface SendPromptContext {
   chat: {
     id: string | number;
+  };
+  state?: {
+    codexSmith?: {
+      grant?: {
+        codex?: RoleCodexSettings;
+      };
+    };
   };
 }
 
@@ -174,13 +185,24 @@ interface NoPendingPromptResult {
   reason: "no_pending_prompt";
 }
 
+interface SendPromptProfileMismatchResult {
+  started: false;
+  reason: "profile_mismatch";
+  activeMode: SessionMode;
+}
+
 export type SendPromptResult =
   | SendPromptStartedResult
   | SendPromptBusyResult
-  | SendPromptWorkspaceBusyResult;
+  | SendPromptWorkspaceBusyResult
+  | SendPromptProfileMismatchResult;
 
 export type ContinuePendingPromptResult =
   SendPromptStartedResult | SendPromptBusyResult | NoPendingPromptResult;
+
+function codexProfileKey(profile: RoleCodexSettings = {}): string {
+  return `${profile.sandbox || ""}|${profile.approval || ""}|${profile.network ?? ""}`;
+}
 
 interface StoredProjectConversationState {
   lastSessionId?: unknown;
@@ -591,9 +613,13 @@ export class PtyManager {
       threadOptions.model = state.preferredModel;
     }
 
+    // Undefined overrides must not erase configured defaults.
+    const definedOverrides = Object.fromEntries(
+      Object.entries(overrides).filter(([, value]) => value !== undefined)
+    ) as Partial<CodexThreadOptions>;
     const merged = {
       ...threadOptions,
-      ...overrides,
+      ...definedOverrides,
       workingDirectory: workdir
     };
 
@@ -748,13 +774,7 @@ export class PtyManager {
   }
 
   isInsideWorkspaceRoot(candidate: string): boolean {
-    const root = path.resolve(this.config.workspace.root);
-    const target = path.resolve(candidate);
-    const relative = path.relative(root, target);
-    return (
-      relative === "" ||
-      (!relative.startsWith("..") && !path.isAbsolute(relative))
-    );
+    return isPathInside(this.config.workspace.root, candidate);
   }
 
   listProjects(): Array<{ name: string; path: string; relativePath: string }> {
@@ -855,15 +875,21 @@ export class PtyManager {
     };
   }
 
+  peekPreviousWorkdir(chatId: string | number): string | null {
+    const state = this.ensureChatState(resolveConversationKey(chatId));
+    return (
+      (state.recentWorkdirs || []).find(
+        (workdir) => workdir !== state.currentWorkdir
+      ) || null
+    );
+  }
+
   switchToPreviousWorkdir(chatId: string | number): {
     workdir: string;
     relativePath: string;
   } {
     const key = resolveConversationKey(chatId);
-    const state = this.ensureChatState(key);
-    const previous = (state.recentWorkdirs || []).find(
-      (workdir) => workdir !== state.currentWorkdir
-    );
+    const previous = this.peekPreviousWorkdir(key);
 
     if (!previous) {
       throw new Error(t(this.getLanguage(key), "noPreviousProject"));
@@ -878,16 +904,7 @@ export class PtyManager {
     options: SessionOptions = {}
   ): string[] {
     const state = this.ensureChatState(chatId);
-    const args: string[] = [];
-
-    if (options.fullAuto) {
-      args.push(
-        "--ask-for-approval",
-        "never",
-        "--sandbox",
-        this.config.runner.sdkThreadOptions.sandboxMode || "workspace-write"
-      );
-    }
+    const args: string[] = this.getCodexProfileArgs(options);
 
     args.push(...(options.resumeSessionId ? ["exec", "resume"] : ["exec"]));
 
@@ -907,13 +924,31 @@ export class PtyManager {
     return args;
   }
 
+  // Role settings from the access policy; /auto forces approval "never".
+  getCodexProfileArgs(options: SessionOptions = {}): string[] {
+    const profile = options.codexProfile || {};
+    const approval = options.fullAuto ? "never" : profile.approval;
+    const sandbox =
+      profile.sandbox ||
+      (options.fullAuto
+        ? this.config.runner.sdkThreadOptions.sandboxMode || "workspace-write"
+        : undefined);
+    return [
+      ...(approval ? ["--ask-for-approval", approval] : []),
+      ...(sandbox ? ["--sandbox", sandbox] : [])
+    ];
+  }
+
   getInteractiveArgs(
     chatId: string | number,
     options: SessionOptions = {}
   ): string[] {
-    const args = options.resumeSessionId
-      ? ["resume", options.resumeSessionId]
-      : this.getCommandArgsForSession(chatId);
+    const args = [
+      ...this.getCodexProfileArgs({ codexProfile: options.codexProfile }),
+      ...(options.resumeSessionId
+        ? ["resume", options.resumeSessionId]
+        : this.getCommandArgsForSession(chatId))
+    ];
 
     if (options.resumeSessionId && options.initialPrompt) {
       args.push(options.initialPrompt);
@@ -1105,6 +1140,7 @@ export class PtyManager {
     ) as PtyProcess;
 
     this.ensureChatState(chatId).ptySupported = true;
+    session.codexProfileKey = codexProfileKey(options.codexProfile);
     session.proc = proc;
     session.write = (input: string) => proc.write(input);
     session.interrupt = () => proc.write("\u0003");
@@ -1197,11 +1233,14 @@ export class PtyManager {
     let signal: ExitSignal = null;
 
     try {
+      const profile = options.codexProfile || {};
       const threadOptions = this.getSdkThreadOptions(
         session.chatId,
         session.workdir,
         {
-          approvalPolicy: options.fullAuto ? "never" : undefined
+          sandboxMode: profile.sandbox,
+          approvalPolicy: options.fullAuto ? "never" : profile.approval,
+          networkAccessEnabled: profile.network
         }
       );
       const codex = this.getCodexClient();
@@ -1392,6 +1431,7 @@ export class PtyManager {
     const workdir = this.getWorkdir(chatId);
     const projectState = this.ensureProjectState(chatId);
     const state = this.ensureChatState(chatId);
+    const codexProfile = ctx.state?.codexSmith?.grant?.codex || {};
     const withInitialContext = async (value: string): Promise<string> => {
       const memoryContext = String(
         (await this.initialContextProvider?.({
@@ -1440,6 +1480,7 @@ export class PtyManager {
       const initialPrompt = resumed ? prompt : await withInitialContext(prompt);
       const session = this.startSdkSessionWithOptions(chatId, initialPrompt, {
         telegramChatId,
+        codexProfile,
         fullAuto: Boolean(options.fullAuto),
         extraArgs: options.extraArgs || [],
         workdir,
@@ -1493,6 +1534,7 @@ export class PtyManager {
         await withInitialContext(prompt),
         {
           telegramChatId,
+          codexProfile,
           fullAuto: Boolean(options.fullAuto),
           extraArgs: options.extraArgs || [],
           workdir,
@@ -1520,6 +1562,14 @@ export class PtyManager {
         };
       }
 
+      if (existingSession.codexProfileKey !== codexProfileKey(codexProfile)) {
+        return {
+          started: false,
+          reason: "profile_mismatch",
+          activeMode: existingSession.mode
+        };
+      }
+
       existingSession.write?.(`${prompt}\r`);
       return {
         started: true,
@@ -1536,18 +1586,21 @@ export class PtyManager {
         ? {
             telegramChatId,
             workdir,
+            codexProfile,
             resumeSessionId: projectState.lastSessionId,
             initialPrompt
           }
         : {
             telegramChatId,
-            workdir
+            workdir,
+            codexProfile
           }
     );
 
     if (!session) {
       this.startExecSessionWithOptions(chatId, initialPrompt, {
         telegramChatId,
+        codexProfile,
         fullAuto: Boolean(options.fullAuto),
         extraArgs: options.extraArgs || [],
         workdir,
@@ -1597,6 +1650,20 @@ export class PtyManager {
       started: true,
       mode: "pty"
     };
+  }
+
+  peekPendingPrompt(
+    chatId: string | number
+  ): { workdir: string; fullAuto: boolean } | null {
+    const pending = this.ensureChatState(
+      resolveConversationKey(chatId)
+    ).pendingPrompt;
+    return pending
+      ? {
+          workdir: pending.workdir,
+          fullAuto: Boolean(pending.options.fullAuto)
+        }
+      : null;
   }
 
   async continuePendingPrompt(

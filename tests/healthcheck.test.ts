@@ -22,6 +22,9 @@ function createConfig(root: string): AppConfig {
     workspace: {
       root
     },
+    access: {
+      policyFile: null
+    },
     telegram: {
       botToken: "dummy-token",
       apiBase: "https://api.telegram.org",

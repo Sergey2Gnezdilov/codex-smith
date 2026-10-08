@@ -1,6 +1,13 @@
 import type { Context, MiddlewareFn } from "telegraf";
 import type { AppConfig } from "../config.js";
 import {
+  AccessPolicyStore,
+  buildLegacyAccessPolicy,
+  resolveAccessGrant,
+  resolveChatAccess,
+  type AccessPolicySource
+} from "../access/policy.js";
+import {
   runWithAccessState,
   type CodexSmithAccessState
 } from "./accessContext.js";
@@ -18,14 +25,6 @@ function getSenderId(ctx: Context): string {
 function getCommand(text: string): string | null {
   const match = text.match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s|$)/i);
   return match?.[1]?.toLowerCase() || null;
-}
-
-function isGroupChat(ctx: Context): boolean {
-  return ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
-}
-
-function isPrivateChat(ctx: Context): boolean {
-  return ctx.chat?.type === "private";
 }
 
 function isDirectedAtBot(ctx: Context): boolean {
@@ -51,15 +50,19 @@ export function getConversationKey(ctx: Context): string {
   return access?.conversationKey || String(ctx.chat?.id || "");
 }
 
-export function createAuthMiddleware(
-  config: Pick<AppConfig, "telegram">
-): MiddlewareFn<Context> {
-  const allowedSet = new Set(config.telegram.allowedUserIds.map(String));
-  const groupAllowedSet = new Set(
-    config.telegram.groupAllowedUserIds.map(String)
+function isPolicySource(value: unknown): value is AccessPolicySource {
+  return Boolean(
+    value && typeof (value as AccessPolicySource).get === "function"
   );
-  const adminSet = new Set(config.telegram.adminUserIds.map(String));
-  const adminOnlyCommands = new Set(config.telegram.adminOnlyCommands);
+}
+
+export function createAuthMiddleware(
+  source: AccessPolicySource | Pick<AppConfig, "telegram">
+): MiddlewareFn<Context> {
+  const policies: AccessPolicySource = isPolicySource(source)
+    ? source
+    : new AccessPolicyStore(() => buildLegacyAccessPolicy(source.telegram));
+  const reportedChats = new Set<string>();
 
   return async (ctx, next) => {
     const userId = getSenderId(ctx);
@@ -68,35 +71,46 @@ export function createAuthMiddleware(
       return;
     }
 
-    const group = isGroupChat(ctx);
-    const privateChat = isPrivateChat(ctx);
-    const allowed = privateChat
-      ? allowedSet.has(userId)
-      : group && (allowedSet.has(userId) || groupAllowedSet.has(userId));
-    if (!allowed) return;
-
-    if (group && config.telegram.groupRequireMention && !isDirectedAtBot(ctx)) {
+    const policy = policies.get();
+    const chat = resolveChatAccess(policy, chatId, ctx.chat?.type);
+    if (!chat) {
+      if (policy.settings.audit !== "off" && !reportedChats.has(chatId)) {
+        reportedChats.add(chatId);
+        console.info(
+          `[access] ignoring chat ${chatId} (${ctx.chat?.type || "unknown"}): not listed in the access policy`
+        );
+      }
       return;
     }
 
-    const message = ctx.message;
-    const text = message && "text" in message ? String(message.text || "") : "";
-    const command = getCommand(text);
-    const isAdmin = adminSet.has(userId);
-    if (command && adminOnlyCommands.has(command) && !isAdmin) return;
+    if (chat.kind === "group" && chat.requireMention && !isDirectedAtBot(ctx)) {
+      return;
+    }
 
-    const conversationKey = group
-      ? config.telegram.groupConversationScope === "shared"
-        ? `group:${chatId}`
-        : `group:${chatId}:user:${userId}`
-      : `dm:${userId}`;
+    const result = resolveAccessGrant(policy, chat, userId);
+    if (!result.allowed) {
+      if (policy.settings.audit !== "off") {
+        console.info(
+          `[access] deny user=${userId} chat=${chatId} reason=${result.reason}`
+        );
+      }
+      return;
+    }
+
+    const conversationKey =
+      chat.kind === "group"
+        ? chat.conversation === "shared"
+          ? `group:${chatId}`
+          : `group:${chatId}:user:${userId}`
+        : `dm:${userId}`;
 
     const accessCtx = ctx as AccessContext;
     const accessState: CodexSmithAccessState = {
       userId,
       chatId,
       conversationKey,
-      isAdmin
+      isAdmin: result.grant.capabilities.includes("access.manage"),
+      grant: result.grant
     };
     accessCtx.state.codexSmith = accessState;
 

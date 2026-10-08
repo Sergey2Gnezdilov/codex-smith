@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
 import { toErrorMessage } from "./lib/errors.js";
+import { isPathInside } from "./lib/paths.js";
 import {
   normalizeTelegramApiBase,
   normalizeTelegramProxyUrl
@@ -49,6 +50,9 @@ export interface AppConfig {
   };
   workspace: {
     root: string;
+  };
+  access: {
+    policyFile: string | null;
   };
   telegram: {
     botToken: string;
@@ -250,6 +254,15 @@ function resolveDirectoryList(raw: unknown, name: string): string[] {
   return [...new Set(resolved)];
 }
 
+function resolveAccessPolicyFile(value: string | undefined): string | null {
+  if (!value?.trim()) return null;
+  const candidate = path.resolve(value.trim());
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+    throw new Error(`ACCESS_POLICY_FILE does not exist: ${candidate}`);
+  }
+  return candidate;
+}
+
 function parseRunnerBackend(value: string | undefined): RunnerBackend {
   return String(value || "")
     .trim()
@@ -343,6 +356,16 @@ export function loadConfig(): AppConfig {
     process.env.GITHUB_DEFAULT_WORKDIR,
     "GITHUB_DEFAULT_WORKDIR"
   );
+  for (const [name, directory] of [
+    ["CODEX_WORKDIR", runnerCwd],
+    ["GITHUB_DEFAULT_WORKDIR", githubDefaultWorkdir]
+  ] as const) {
+    if (!isPathInside(workspaceRoot, directory)) {
+      console.warn(
+        `[config] ${name} (${directory}) is outside WORKSPACE_ROOT (${workspaceRoot}); repository scopes in the access policy cannot cover it.`
+      );
+    }
+  }
   const rawShellAllowedCommands = parseJson<unknown[]>(
     process.env.SHELL_ALLOWED_COMMANDS,
     []
@@ -425,6 +448,9 @@ export function loadConfig(): AppConfig {
     },
     workspace: {
       root: workspaceRoot
+    },
+    access: {
+      policyFile: resolveAccessPolicyFile(process.env.ACCESS_POLICY_FILE)
     },
     telegram: {
       botToken: required("BOT_TOKEN"),
