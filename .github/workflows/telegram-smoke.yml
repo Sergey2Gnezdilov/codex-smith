@@ -7,23 +7,35 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
+    # The secrets context is not available in job-level `if`, so the token is
+    # exposed through env and checked per step.
+    env:
+      BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_EXPECTED_USERNAME: ${{ secrets.TELEGRAM_EXPECTED_USERNAME }}
+      TELEGRAM_SMOKE_CHAT_ID: ${{ secrets.TELEGRAM_SMOKE_CHAT_ID }}
     steps:
+      - name: Skip without a bot token
+        if: ${{ env.BOT_TOKEN == '' }}
+        run: echo "TELEGRAM_BOT_TOKEN is not configured; skipping the Telegram smoke check."
+
       - uses: actions/checkout@v4
+        if: ${{ env.BOT_TOKEN != '' }}
 
       - uses: actions/setup-node@v4
+        if: ${{ env.BOT_TOKEN != '' }}
         with:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - if: ${{ env.BOT_TOKEN != '' }}
+        run: npm ci
 
       - name: Telegram getMe smoke check
-        env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_EXPECTED_USERNAME: ${{ secrets.TELEGRAM_EXPECTED_USERNAME }}
-          TELEGRAM_SMOKE_CHAT_ID: ${{ secrets.TELEGRAM_SMOKE_CHAT_ID }}
+        if: ${{ env.BOT_TOKEN != '' }}
         run: npm run telegram:smoke
